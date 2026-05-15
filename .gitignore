@@ -63,3 +63,6 @@ tools/captcha_trainer/build/
 tools/captcha_trainer/dist/
 .spectra/
 openspec/.vector-search.db*
+
+# Playwright
+.playwright-mcp/
