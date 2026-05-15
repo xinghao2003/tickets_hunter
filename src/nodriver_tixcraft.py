@@ -52,6 +52,7 @@ from platforms.tixcraft import *
 from platforms.ibon import *
 from platforms.kham import *
 from platforms.hkticketing import *
+from platforms.goliveasia import *
 
 CONST_CITYLINE_SIGN_IN_URL = "https://www.cityline.com/Login.html?targetUrl=https%3A%2F%2Fwww.cityline.com%2FEvents.html"
 CONST_FAMI_SIGN_IN_URL = "https://www.famiticket.com.tw/Home/User/SignIn"
@@ -880,6 +881,10 @@ async def main(args):
         # FANSI GO Cognito login
         if FANSIGO_COGNITO_DOMAIN in url:
             await nodriver_fansigo_signin(tab, url, config_dict)
+
+        # Go Live Asia (marketing site + thaiticketmajor booking engine)
+        if 'golive-asia.com' in url or 'golive-asia.thaiticketmajor.com' in url:
+            await nodriver_goliveasia_main(tab, url, config_dict)
 
         # for facebook
         facebook_login_url = 'https://www.facebook.com/login.php?'

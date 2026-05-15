@@ -87,6 +87,7 @@ CONST_SUPPORTED_SITES = ["https://kktix.com"
     ,"https://hotshow.hkticketing.com/ (快達票)"
     ,"https://ticketing.galaxymacau.com/ (澳門銀河)"
     ,"http://premier.ticketek.com.au"
+    ,"https://www.golive-asia.com/ (Go Live Asia)"
     ]
 
 URL_DONATE = 'https://max-everyday.com/about/#donate'
@@ -173,6 +174,8 @@ def get_default_config():
     config_dict["accounts"]["ticket_password"] = ""
     config_dict["accounts"]["udn_password"] = ""
     config_dict["accounts"]["ticketplus_password"] = ""
+    config_dict["accounts"]["goliveasia_account"] = ""
+    config_dict["accounts"]["goliveasia_password"] = ""
 
     # Advanced settings (non-credential settings only)
     config_dict['advanced']={}
