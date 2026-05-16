@@ -66,3 +66,6 @@ openspec/.vector-search.db*
 
 # Playwright
 .playwright-mcp/
+
+# Temporary files
+settings.json

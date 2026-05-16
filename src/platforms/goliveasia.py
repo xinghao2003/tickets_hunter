@@ -22,6 +22,7 @@ import asyncio
 import json
 import random
 import traceback
+import urllib.parse
 
 from zendriver import cdp
 
@@ -45,8 +46,153 @@ __all__ = [
 ]
 
 _TTM_BASE = "golive-asia.thaiticketmajor.com"
+_GOLIVE_LOGIN_URL = "https://www.golive-asia.com/login"
 
 _state = {}
+
+
+def _get_current_url(tab):
+    return tab.url if hasattr(tab, 'url') else str(tab.target.url)
+
+
+def _is_event_or_sales_url(url):
+    return '/event-detail/' in url or '/sale' in url
+
+
+def _remember_event_url(url):
+    if _is_event_or_sales_url(url):
+        _state["pending_event_url"] = url
+
+
+def _ordered_zones(zones, mode):
+    if mode == CONST_FROM_BOTTOM_TO_TOP:
+        return list(reversed(zones))
+    if mode == CONST_RANDOM:
+        shuffled = list(zones)
+        random.shuffle(shuffled)
+        return shuffled
+    return zones
+
+
+def _get_section_from_url(url):
+    parsed = urllib.parse.urlparse(url)
+    query = urllib.parse.parse_qs(parsed.query)
+    for key in ("zone", "section", "zoneName"):
+        values = query.get(key)
+        if values and values[0]:
+            return values[0]
+    return parsed.fragment
+
+
+def _mark_current_zone_failed(url, debug, reason):
+    section = _state.get("current_zone", "") or _get_section_from_url(url)
+    if section:
+        fail_list = _state.setdefault("fail_list", [])
+        if section not in fail_list:
+            fail_list.append(section)
+        debug.log(f"[GOLIVEASIA SEAT] {reason} in {section}; marked failed")
+    else:
+        debug.log(f"[GOLIVEASIA SEAT] {reason}; section unknown")
+
+
+async def _ttm_back_to_zones(tab, config_dict):
+    debug = util.create_debug_logger(config_dict)
+
+    try:
+        zones_url = _state.get("last_zones_url", "")
+        if zones_url:
+            debug.log(f"[GOLIVEASIA SEAT] Returning to zones page: {zones_url[:80]}...")
+            await tab.get(zones_url)
+        else:
+            debug.log("[GOLIVEASIA SEAT] No stored zones URL; using browser history")
+            await tab.evaluate("history.back()")
+
+        await asyncio.sleep(random.uniform(1.0, 2.0))
+    except Exception as exc:
+        debug.log(f"[GOLIVEASIA SEAT] Failed to return to zones page: {str(exc)}")
+
+
+async def _goto_login(tab, config_dict, source_url=None):
+    debug = util.create_debug_logger(config_dict)
+
+    if source_url:
+        _remember_event_url(source_url)
+
+    debug.log("[GOLIVEASIA LOGIN] Navigating to login page")
+    await tab.get(_GOLIVE_LOGIN_URL)
+    await asyncio.sleep(random.uniform(1.0, 2.0))
+
+
+async def _handle_login_modal(tab, config_dict):
+    """Detect and handle the 'Sign In to Proceed' overlay modal after BUY NOW click."""
+    debug = util.create_debug_logger(config_dict)
+
+    try:
+        source_url = _get_current_url(tab)
+        modal_result = await tab.evaluate('''
+            (function() {
+                // Check for the login dialog overlay
+                var dialogs = document.querySelectorAll('[class*="dialog"], [class*="modal"], [role="dialog"]');
+                for (var i = 0; i < dialogs.length; i++) {
+                    var txt = dialogs[i].textContent || '';
+                    if (txt.indexOf('Sign In') !== -1 || txt.indexOf('GO TO LOGIN') !== -1) {
+                        // Close the modal if possible, then navigate directly to /login.
+                        var btns = dialogs[i].querySelectorAll('button');
+                        for (var j = 0; j < btns.length; j++) {
+                            if (btns[j].textContent.trim() === 'CANCEL') {
+                                btns[j].click();
+                                return 'login_modal_cancel';
+                            }
+                        }
+                        return 'login_modal_found';
+                    }
+                }
+                return null;
+            })()
+        ''')
+
+        if modal_result:
+            debug.log(f"[GOLIVEASIA MODAL] {modal_result}")
+            await asyncio.sleep(random.uniform(0.5, 1.0))
+
+            await _goto_login(tab, config_dict, source_url)
+            return True
+
+    except Exception as exc:
+        debug.log(f"[GOLIVEASIA MODAL] Error: {str(exc)}")
+
+    return False
+
+
+async def _check_logged_in(tab):
+    """Check if user is logged in on golive-asia.com."""
+    try:
+        result = await tab.evaluate('''
+            (function() {
+                var body = document.body.innerText || '';
+                if (body.indexOf('Hi,') !== -1 || body.indexOf('Logout') !== -1) return true;
+
+                var loggedOutTextFound = false;
+                var userElementFound = false;
+                var els = document.querySelectorAll('a, button, [class*="login"], [class*="user"], [class*="avatar"]');
+                for (var i = 0; i < els.length; i++) {
+                    var txt = els[i].textContent || '';
+                    var normalized = txt.trim().toLowerCase();
+                    if (normalized === 'login' || normalized === 'sign in') loggedOutTextFound = true;
+                    if (normalized.indexOf('logout') !== -1 || normalized.indexOf('my account') !== -1 || normalized.indexOf('profile') !== -1) return true;
+                    if (els[i].className && String(els[i].className).match(/user|avatar/i)) userElementFound = true;
+                }
+
+                if (loggedOutTextFound) return false;
+                if (userElementFound) return true;
+                return null;
+            })()
+        ''')
+        if result is None:
+            return _state.get("login_completed", False)
+        return result
+    except Exception:
+        return _state.get("login_completed", False)
 
 
 # ---------- golive-asia.com (marketing site) ----------
@@ -54,10 +200,35 @@ _state = {}
 async def _goliveasia_event_detail(tab, config_dict):
     """Event detail page on golive-asia.com — click BUY NOW to enter booking."""
     debug = util.create_debug_logger(config_dict)
+
+    # Guard: don't keep clicking BUY NOW in a loop
+    if _state.get("buy_now_clicked", False):
+        # Check if a login modal appeared
+        modal_handled = await _handle_login_modal(tab, config_dict)
+        if modal_handled:
+            return True
+
+        # Check if we've navigated away (to login or thaiticketmajor)
+        current_url = tab.url if hasattr(tab, 'url') else str(tab.target.url)
+        if 'thaiticketmajor' in current_url or '/login' in current_url:
+            return True
+
+        # Still on event page after click — wait for navigation
+        debug.log("[GOLIVEASIA EVENT] Waiting for navigation after BUY NOW...")
+        return False
+
     debug.log("[GOLIVEASIA EVENT] Looking for BUY NOW button")
 
     try:
         await asyncio.sleep(random.uniform(0.5, 1.0))
+
+        # Check if logged in first
+        is_logged_in = await _check_logged_in(tab)
+        if not is_logged_in:
+            debug.log("[GOLIVEASIA EVENT] Not logged in — redirecting to login")
+            current_url = _get_current_url(tab)
+            await _goto_login(tab, config_dict, current_url)
+            return True
 
         clicked = await tab.evaluate('''
             (function() {
@@ -75,7 +246,14 @@ async def _goliveasia_event_detail(tab, config_dict):
 
         if clicked:
             debug.log("[GOLIVEASIA EVENT] BUY NOW clicked")
+            _state["buy_now_clicked"] = True
             await asyncio.sleep(random.uniform(1.0, 2.0))
+
+            # Check if login modal appeared instead of redirect
+            modal_handled = await _handle_login_modal(tab, config_dict)
+            if modal_handled:
+                return True
+
             return True
         else:
             # Maybe ticket is UNAVAILABLE — check for countdown
@@ -170,6 +348,7 @@ async def _goliveasia_login(tab, config_dict):
                 await asyncio.sleep(0.5)
                 current_url = tab.url if hasattr(tab, 'url') else str(tab.target.url)
                 if '/login' not in current_url:
+                    _state["login_completed"] = True
                     debug.log(f"[GOLIVEASIA LOGIN] Redirected to: {current_url[:60]}...")
                     return True
             debug.log("[GOLIVEASIA LOGIN] No redirect after 10s")
@@ -294,20 +473,25 @@ async def _ttm_select_zone(tab, config_dict):
                     debug.log("[GOLIVEASIA ZONE] No keyword match and fallback disabled")
                     return False
 
+        fail_list = _state.setdefault("fail_list", [])
+        if fail_list:
+            matched = [zone for zone in matched if zone["section"] not in fail_list]
+            debug.log(f"[GOLIVEASIA ZONE] Skipping failed zones: {fail_list}")
+
+        if len(matched) == 0:
+            debug.log("[GOLIVEASIA ZONE] No untried matching zones")
+            return False
+
         # Pick target zone based on mode
-        target = None
-        if auto_select_mode == CONST_FROM_BOTTOM_TO_TOP:
-            target = matched[-1] if matched else None
-        elif auto_select_mode == CONST_RANDOM:
-            target = random.choice(matched) if matched else None
-        else:
-            target = matched[0] if matched else None
+        ordered = _ordered_zones(matched, auto_select_mode)
+        target = ordered[0] if ordered else None
 
         if not target:
             debug.log("[GOLIVEASIA ZONE] No target zone selected")
             return False
 
         debug.log(f"[GOLIVEASIA ZONE] Selecting zone: {target['section']} ({target['type']})")
+        _state["current_zone"] = target["section"]
 
         # Click the area element
         clicked = await tab.evaluate(f'''
@@ -368,11 +552,26 @@ async def _ttm_select_seats(tab, config_dict):
         debug.log(f"[GOLIVEASIA SEAT] Found {len(available_seats)} available seats")
 
         if len(available_seats) == 0:
-            debug.log("[GOLIVEASIA SEAT] No available seats")
-            return False
+            current_url = tab.url if hasattr(tab, 'url') else str(tab.target.url)
+            _mark_current_zone_failed(current_url, debug, "No available seats")
+
+            await _ttm_back_to_zones(tab, config_dict)
+            return True
+
+        if len(available_seats) < ticket_number:
+            current_url = tab.url if hasattr(tab, 'url') else str(tab.target.url)
+            _mark_current_zone_failed(
+                current_url,
+                debug,
+                f"Only {len(available_seats)} available seats for requested {ticket_number}"
+            )
+
+            await _ttm_back_to_zones(tab, config_dict)
+            return True
 
         # Select up to ticket_number seats
         to_select = available_seats[:ticket_number]
+        selected_count = 0
 
         for seat in to_select:
             clicked = await tab.evaluate(f'''
@@ -384,11 +583,23 @@ async def _ttm_select_seats(tab, config_dict):
             ''')
 
             if clicked:
+                selected_count += 1
                 debug.log(f"[GOLIVEASIA SEAT] Selected seat: {seat['text']}")
             else:
                 debug.log(f"[GOLIVEASIA SEAT] Could not click seat: {seat['id']}")
 
             await asyncio.sleep(random.uniform(0.2, 0.4))
+
+        if selected_count < ticket_number:
+            current_url = tab.url if hasattr(tab, 'url') else str(tab.target.url)
+            _mark_current_zone_failed(
+                current_url,
+                debug,
+                f"Selected {selected_count} seats for requested {ticket_number}"
+            )
+
+            await _ttm_back_to_zones(tab, config_dict)
+            return True
 
         await asyncio.sleep(random.uniform(0.5, 1.0))
 
@@ -409,9 +620,17 @@ async def _ttm_select_seats(tab, config_dict):
         if booked:
             debug.log("[GOLIVEASIA SEAT] Book Now clicked")
             await asyncio.sleep(random.uniform(1.0, 2.0))
+            current_url = tab.url if hasattr(tab, 'url') else str(tab.target.url)
+            if 'fixed.php' in current_url:
+                _mark_current_zone_failed(current_url, debug, "Book Now did not advance")
+                await _ttm_back_to_zones(tab, config_dict)
             return True
         else:
             debug.log("[GOLIVEASIA SEAT] Book Now link not found")
+            current_url = tab.url if hasattr(tab, 'url') else str(tab.target.url)
+            _mark_current_zone_failed(current_url, debug, "Book Now link not found")
+            await _ttm_back_to_zones(tab, config_dict)
+            return True
 
     except Exception as exc:
         debug.log(f"[GOLIVEASIA SEAT] Error: {str(exc)}")
@@ -432,18 +651,45 @@ async def _ttm_festival_select(tab, config_dict):
         # Festival sections typically have a quantity selector
         result = await tab.evaluate(f'''
             (function() {{
-                // Look for quantity input or +/- buttons
-                var qtyInput = document.querySelector('input[type="number"], input[name="quantity"]');
+                function fireChange(el) {{
+                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }}
+
+                var soldOutText = (document.body.innerText || '').toLowerCase();
+                if (soldOutText.indexOf('sold out') !== -1 || soldOutText.indexOf('unavailable') !== -1) {{
+                    return 'sold_out';
+                }}
+
+                // Look for quantity input.
+                var qtyInput = document.querySelector(
+                    'input[type="number"], input[name*="qty" i], input[name*="quantity" i], input[id*="qty" i], input[id*="quantity" i]'
+                );
                 if (qtyInput) {{
                     qtyInput.value = "{ticket_number}";
-                    qtyInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    fireChange(qtyInput);
                     return 'quantity_set';
                 }}
 
-                // Look for +/- buttons to click
-                var plusBtn = document.querySelector('.btn-plus, [data-action="plus"], button.qty-plus');
+                // Some standing pages use a select dropdown for quantity.
+                var selects = document.querySelectorAll('select');
+                for (var i = 0; i < selects.length; i++) {{
+                    var select = selects[i];
+                    for (var j = 0; j < select.options.length; j++) {{
+                        if (select.options[j].value === "{ticket_number}" || select.options[j].text.trim() === "{ticket_number}") {{
+                            select.selectedIndex = j;
+                            fireChange(select);
+                            return 'select_set';
+                        }}
+                    }}
+                }}
+
+                // Look for +/- controls. For target 1, click plus once from zero.
+                var plusBtn = document.querySelector(
+                    '.btn-plus, .qty-plus, [data-action="plus"], [aria-label*="plus" i], [aria-label*="increase" i], button[class*="plus" i], a[class*="plus" i]'
+                );
                 if (plusBtn) {{
-                    for (var i = 1; i < {ticket_number}; i++) {{
+                    for (var i = 0; i < {ticket_number}; i++) {{
                         plusBtn.click();
                     }}
                     return 'plus_clicked';
@@ -454,6 +700,12 @@ async def _ttm_festival_select(tab, config_dict):
         ''')
 
         debug.log(f"[GOLIVEASIA FESTIVAL] Quantity result: {result}")
+
+        if result in ('no_quantity_control', 'sold_out'):
+            current_url = tab.url if hasattr(tab, 'url') else str(tab.target.url)
+            _mark_current_zone_failed(current_url, debug, f"Festival quantity result {result}")
+            await _ttm_back_to_zones(tab, config_dict)
+            return True
 
         await asyncio.sleep(random.uniform(0.5, 1.0))
 
@@ -474,6 +726,15 @@ async def _ttm_festival_select(tab, config_dict):
         if booked:
             debug.log("[GOLIVEASIA FESTIVAL] Book Now clicked")
             await asyncio.sleep(random.uniform(1.0, 2.0))
+            current_url = tab.url if hasattr(tab, 'url') else str(tab.target.url)
+            if 'festival.php' in current_url:
+                _mark_current_zone_failed(current_url, debug, "Festival Book Now did not advance")
+                await _ttm_back_to_zones(tab, config_dict)
+            return True
+        else:
+            current_url = tab.url if hasattr(tab, 'url') else str(tab.target.url)
+            _mark_current_zone_failed(current_url, debug, "Festival Book Now link not found")
+            await _ttm_back_to_zones(tab, config_dict)
             return True
 
     except Exception as exc:
@@ -554,6 +815,7 @@ async def nodriver_goliveasia_main(tab, url, config_dict):
         # ===== golive-asia.com pages =====
         if _TTM_BASE not in url:
             if '/login' in url:
+                _state["buy_now_clicked"] = False
                 result = await _goliveasia_login(tab, config_dict)
 
             elif '/event-detail/' in url:
@@ -562,22 +824,26 @@ async def nodriver_goliveasia_main(tab, url, config_dict):
 
             elif '/home' in url or url.endswith('.com/') or url.endswith('.com'):
                 # Homepage — check if we should redirect to a specific event
-                homepage = config_dict.get("homepage", "")
-                if homepage and '/event-detail/' in homepage:
-                    debug.log(f"[GOLIVEASIA MAIN] Redirecting to event: {homepage[:60]}...")
-                    await tab.get(homepage)
+                target_url = _state.pop("pending_event_url", "") or config_dict.get("homepage", "")
+                if target_url and _is_event_or_sales_url(target_url):
+                    debug.log(f"[GOLIVEASIA MAIN] Redirecting to event: {target_url[:60]}...")
+                    await tab.get(target_url)
                     result = True
 
             return result
 
         # ===== golive-asia.thaiticketmajor.com pages =====
+        _state["buy_now_clicked"] = False
 
         if 'verify_condition' in url:
             # Conditions page — accept T&Cs
+            _state["fail_list"] = []
+            _state["current_zone"] = ""
             result = await _ttm_accept_conditions(tab, config_dict)
 
         elif 'zones.php' in url:
             # Step 1/4: Zone/section selection
+            _state["last_zones_url"] = url
             result = await _ttm_select_zone(tab, config_dict)
 
         elif 'fixed.php' in url:
