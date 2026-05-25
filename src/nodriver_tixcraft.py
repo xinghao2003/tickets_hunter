@@ -74,6 +74,13 @@ async def nodriver_goto_homepage(driver, config_dict):
     debug = util.create_debug_logger(config_dict)
     tab = None
     homepage = config_dict["homepage"]
+    if 'golive-asia.com' in homepage and ('/event-detail/' in homepage or '/sale' in homepage):
+        parsed_homepage = urllib.parse.urlparse(homepage)
+        redirect_path = parsed_homepage.path
+        if parsed_homepage.query:
+            redirect_path += '?' + parsed_homepage.query
+        homepage = "https://www.golive-asia.com/login?redirect=" + urllib.parse.quote(redirect_path, safe="/?=&")
+
     if 'kktix.c' in homepage:
         # for like human.
         try:

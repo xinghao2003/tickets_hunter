@@ -472,6 +472,11 @@ async def _goliveasia_login(tab, config_dict):
                 if '/login' not in current_url:
                     _state["login_completed"] = True
                     debug.log(f"[GOLIVEASIA LOGIN] Redirected to: {current_url[:60]}...")
+                    target_url = _state.pop("pending_event_url", "") or config_dict.get("homepage", "")
+                    if target_url and _is_event_or_sales_url(target_url) and target_url not in current_url:
+                        debug.log(f"[GOLIVEASIA LOGIN] Navigating to target event: {target_url[:60]}...")
+                        await tab.get(target_url)
+                        await asyncio.sleep(random.uniform(1.0, 2.0))
                     return True
             debug.log("[GOLIVEASIA LOGIN] No redirect after 10s")
         else:
