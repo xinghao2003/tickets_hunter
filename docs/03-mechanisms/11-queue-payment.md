@@ -1,7 +1,7 @@
 # 機制 11：排隊與付款 (Stage 11)
 
 **文件說明**：說明搶票系統的排隊機制（Queue-IT、平台內建排隊）與付款頁面偵測策略
-**最後更新**：2026-03-06
+**最後更新**：2026-05-15
 
 ---
 
@@ -17,11 +17,21 @@
 
 ## 排隊機制分類
 
-### 1. 第三方排隊 — Queue-IT（iBon）
+### 1. 第三方排隊 — Queue-IT（iBon、TixCraft、Ticketmaster SG）
 
-iBon 使用第三方 Queue-IT 服務，URL 包含 `queue-it.net`。
+三個平台共用 Queue-IT SaaS 虛擬等候室，URL 均包含 `queue-it.net`。雖然各平台的 customerId 與整合方式不同，但 bot 端使用**完全相同的 URL-based 偵測邏輯**處理，無需區分客戶帳號。
 
-**偵測與等待邏輯**（行 12825-12838）：
+**各平台 Queue-IT 配置對照**：
+
+| 平台 | Queue-IT customerId | Queue Domain | 整合方式 | Token 有效期 |
+|------|---------------------|--------------|---------|-------------|
+| iBon | `ibontaiwan` | `ibontaiwan.queue-it.net` | Server-side (ASP.NET v4.0.5) | 240 秒 |
+| TixCraft | （首頁未載入） | — | Client-side JS（按需觸發） | 隨 EPS tmpt |
+| Ticketmaster SG | `ticketmasterasia` | `queue.queue-it.net` (TM SG)、`assets.queue-it.net/ticketmasterasia/...` | Client-side `fetch` 攔截 + `RequestInterceptHelper` | 隨 EPS tmpt |
+
+> **注意**：Ticketmaster SG 於 2026-05-15 從共用的 `tixcraft` 帳號獨立為 `ticketmasterasia`。詳見 [反偵測稽核 2.15 節](../internal/project-tracking/anti-detection-audit.md#215-tixcraft--ticketmaster-sg-同家族對照2026-05-15)。
+
+**偵測與等待邏輯**（URL-based，customerId-agnostic）：
 
 - 進入排隊：URL 包含 `queue-it.net` 時記錄 `queue_it_enter_time` 時間戳
 - 等待排隊：直接 `return False` 讓主迴圈繼續輪詢，不執行任何頁面操作
@@ -30,6 +40,17 @@ iBon 使用第三方 Queue-IT 服務，URL 包含 `queue-it.net`。
 ```
 進入 queue-it.net → 記錄時間 → 每次輪詢 return False（不操作）→ URL 變化 → 排隊結束
 ```
+
+**程式碼位置**：
+
+| 平台 | 模組 | 函式 |
+|------|------|------|
+| iBon | `src/platforms/ibon.py` | `nodriver_ibon_main()` 入口處（`_ensure_state` 後、login page 偵測前） |
+| TixCraft / Ticketmaster SG | `src/platforms/tixcraft.py` | `nodriver_tixcraft_main()` 入口處（alert handler 註冊後、EPS block 偵測前） |
+
+兩處邏輯結構相同，sub-state key 統一使用 `queue_it_enter_time`。
+
+**iBon 詳細排查**：[iBon Queue-IT 疑難排解](../internal/troubleshooting/ibon_queue_it_guide.md) ｜ [iBon Queue-IT 機制研究](../internal/platform-research/ibon-queue-it-research.md)
 
 ### 2. 平台內建排隊 — TicketPlus
 

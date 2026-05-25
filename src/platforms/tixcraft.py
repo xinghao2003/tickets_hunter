@@ -1285,7 +1285,7 @@ async def nodriver_fill_verify_form(tab, config_dict, inferred_answer_string, fa
                         var input = document.querySelector("{input_text_css}");
                         if (input) {{
                             input.value = "";
-                            input.value = "{inferred_answer_string}";
+                            input.value = {json.dumps(inferred_answer_string)};
                             input.dispatchEvent(new Event('input', {{ bubbles: true }}));
                             input.dispatchEvent(new Event('change', {{ bubbles: true }}));
                         }}
@@ -1373,6 +1373,16 @@ async def nodriver_tixcraft_input_check_code(tab, config_dict, fail_list, questi
             if config_dict["advanced"]["auto_guess_options"]:
                 # Note: guess_tixcraft_question() doesn't use the driver parameter
                 answer_list = util.guess_tixcraft_question(None, question_text, config_dict)
+
+        # Fallback: use discount_code as final answer when user_guess_string is empty
+        # and auto_guess_options yielded no result. Covers serial-number style prompts
+        # (e.g. Weverse Presale MY MEMBERSHIP) where users naturally fill the discount
+        # code field rather than the answer dictionary.
+        if len(answer_list)==0:
+            discount_code_fallback = (config_dict["advanced"].get("discount_code") or "").strip()
+            if discount_code_fallback:
+                debug.log("[VERIFY] Using discount_code as final fallback answer")
+                answer_list = [discount_code_fallback]
 
         inferred_answer_string = ""
         for answer_item in answer_list:
@@ -2932,6 +2942,7 @@ async def nodriver_tixcraft_main(tab, url, config_dict, ocr, Captcha_Browser):
             "ticketmaster_phase": "area_select",
             "ticketmaster_captcha_processed_url": "",
             "ip_block_until": 0,
+            "queue_it_enter_time": None,
         })
 
     # Register global alert handler (remains active throughout session)
@@ -2943,6 +2954,21 @@ async def nodriver_tixcraft_main(tab, url, config_dict, ocr, Captcha_Browser):
             debug.log(f"[GLOBAL ALERT] Global alert handler registered")
         except Exception as handler_exc:
             debug.log(f"[GLOBAL ALERT] Failed to register alert handler: {handler_exc}")
+
+    # Queue-it virtual waiting room detection (TixCraft + Ticketmaster SG)
+    # Pattern: ported from platforms/ibon.py — URL-based, customerId-agnostic.
+    # Both family platforms route high-traffic users to *.queue-it.net before EPS evaluates.
+    url_lower = url.lower()
+    if 'queue-it.net' in url_lower:
+        if _state.get("queue_it_enter_time") is None:
+            _state["queue_it_enter_time"] = time.time()
+            debug.log("[TIXCRAFT] Queue-IT entered, waiting...")
+        return False
+    else:
+        if _state.get("queue_it_enter_time") is not None:
+            elapsed = time.time() - _state["queue_it_enter_time"]
+            debug.log(f"[TIXCRAFT] Queue-IT passed (waited {elapsed:.1f}s)")
+            _state["queue_it_enter_time"] = None
 
     await nodriver_tixcraft_home_close_window(tab)
 

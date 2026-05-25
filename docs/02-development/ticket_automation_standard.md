@@ -474,7 +474,8 @@ config_dict["advanced"]["auto_guess_options"]   # 是否自動猜測答案
 **回退策略**：
 1. **優先策略**：使用 `user_guess_string` 填寫自訂問題答案
 2. **回退策略 1**：若 `auto_guess_options=true` → 自動猜測並填寫
-3. **回退策略 2**：若無法自動填寫 → 跳過非必填欄位，等待手動填寫必填欄位
+3. **回退策略 2**：`discount_code` 作為最終保底答案（僅 tixcraft 家族；涵蓋 `nodriver_tixcraft_verify` 與 `nodriver_ticketmaster_promo`）
+4. **回退策略 3**：若仍無答案 → 跳過非必填欄位，等待手動填寫必填欄位
 
 **函式命名規範**：
 - 主函式：`{platform}_form_auto_fill()` (若平台有此需求)
@@ -886,7 +887,7 @@ state_manager
 | 設定項目 | 設定路徑 | 類型 | 預設值 | 說明 |
 |---------|---------|------|--------|------|
 | server_port | `config_dict["advanced"]["server_port"]` | int | 16888 | 設定介面 Web Server 埠號 |
-| discount_code | `config_dict["advanced"]["discount_code"]` | str | "" | 優惠序號（TicketPlus、KKTIX 等活動用） |
+| discount_code | `config_dict["advanced"]["discount_code"]` | str | "" | 優惠序號（TicketPlus、KKTIX）；亦作為 TixCraft 家族驗證題的最終 fallback |
 | auto_guess_options | `config_dict["advanced"]["auto_guess_options"]` | bool | false | 是否自動猜測選項 |
 | user_guess_string | `config_dict["advanced"]["user_guess_string"]` | str | "" | 使用者自訂答案字串 |
 | proxy_server_port | `config_dict["advanced"]["proxy_server_port"]` | str | "" | 代理伺服器端口 |
