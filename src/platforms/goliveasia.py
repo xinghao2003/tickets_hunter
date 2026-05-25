@@ -1167,10 +1167,22 @@ async def _ttm_festival_select(tab, config_dict):
     return False
 
 
+def _notify_order_reached(config_dict, message="[GOLIVEASIA] Order page reached!"):
+    if _state.get("payment_logged", False):
+        return
+
+    print(message)
+    play_sound_while_ordering(config_dict)
+    send_discord_notification(config_dict, "order", "goliveasia")
+    send_telegram_notification(config_dict, "order", "goliveasia")
+    _state["payment_logged"] = True
+
+
 async def _ttm_enroll(tab, config_dict):
     """Enrollment/details page — submit pre-filled attendee form."""
     debug = util.create_debug_logger(config_dict)
     debug.log("[GOLIVEASIA ENROLL] On attendee details page")
+    _notify_order_reached(config_dict)
 
     try:
         await asyncio.sleep(random.uniform(0.5, 1.0))
@@ -1228,12 +1240,7 @@ async def nodriver_goliveasia_main(tab, url, config_dict):
         # ===== Payment / success detection =====
         if '/payment' in url and _TTM_BASE not in url:
             # External payment gateway
-            if not _state.get("payment_logged", False):
-                print("[GOLIVEASIA] Payment page reached!")
-                play_sound_while_ordering(config_dict)
-                send_discord_notification(config_dict, "payment", "goliveasia")
-                send_telegram_notification(config_dict, "payment", "goliveasia")
-                _state["payment_logged"] = True
+            _notify_order_reached(config_dict, "[GOLIVEASIA] Payment page reached!")
             return True
 
         # ===== golive-asia.com pages =====
@@ -1292,12 +1299,7 @@ async def nodriver_goliveasia_main(tab, url, config_dict):
             result = await _ttm_enroll(tab, config_dict)
 
         elif 'payment' in url or 'checkout' in url or 'confirm' in url:
-            if not _state.get("payment_logged", False):
-                print("[GOLIVEASIA] Payment/checkout page reached!")
-                play_sound_while_ordering(config_dict)
-                send_discord_notification(config_dict, "payment", "goliveasia")
-                send_telegram_notification(config_dict, "payment", "goliveasia")
-                _state["payment_logged"] = True
+            _notify_order_reached(config_dict, "[GOLIVEASIA] Payment/checkout page reached!")
             result = True
 
         else:
