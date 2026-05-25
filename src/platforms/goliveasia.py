@@ -74,6 +74,49 @@ def _ordered_zones(zones, mode):
     return zones
 
 
+def _is_excluded_by_keyword(config_dict, row_text):
+    keyword_exclude = config_dict.get("keyword_exclude", "")
+    if keyword_exclude and row_text:
+        return util.reset_row_text_if_match_keyword_exclude(config_dict, row_text)
+    return False
+
+
+def _seat_sort_key(seat):
+    row = seat.get("row", "")
+    number = seat.get("number")
+    if number is None:
+        number = 999999
+    return (row, number)
+
+
+def _select_target_seats(available_seats, ticket_number, allow_non_adjacent):
+    if allow_non_adjacent or ticket_number <= 1:
+        return available_seats[:ticket_number]
+
+    seats_by_row = {}
+    for seat in available_seats:
+        row = seat.get("row", "")
+        number = seat.get("number")
+        if row and number is not None:
+            seats_by_row.setdefault(row, []).append(seat)
+
+    for row in sorted(seats_by_row.keys()):
+        row_seats = sorted(seats_by_row[row], key=lambda item: item["number"])
+        for start_index in range(0, len(row_seats)):
+            block = [row_seats[start_index]]
+            last_number = row_seats[start_index]["number"]
+            for seat in row_seats[start_index + 1:]:
+                if seat["number"] == last_number + 1:
+                    block.append(seat)
+                    last_number = seat["number"]
+                    if len(block) >= ticket_number:
+                        return block[:ticket_number]
+                elif seat["number"] > last_number + 1:
+                    break
+
+    return []
+
+
 def _get_section_from_url(url):
     parsed = urllib.parse.urlparse(url)
     query = urllib.parse.parse_qs(parsed.query)
@@ -164,6 +207,77 @@ async def _handle_login_modal(tab, config_dict):
     return False
 
 
+async def _handle_buy_now_dropdown(tab, config_dict):
+    """Click a visible sale option when BUY NOW opens a dropdown menu."""
+    debug = util.create_debug_logger(config_dict)
+
+    try:
+        result = await tab.evaluate('''
+            (function() {
+                function isVisible(el) {
+                    if (!el) return false;
+                    var rect = el.getBoundingClientRect();
+                    var style = window.getComputedStyle(el);
+                    return rect.width > 0 && rect.height > 0 &&
+                        style.display !== 'none' &&
+                        style.visibility !== 'hidden' &&
+                        style.opacity !== '0';
+                }
+
+                var items = [];
+                var candidates = document.querySelectorAll(
+                    '[role="menuitem"], .el-dropdown-menu__item, li[class*="dropdown" i], a[class*="dropdown" i]'
+                );
+                for (var i = 0; i < candidates.length; i++) {
+                    var el = candidates[i];
+                    var text = (el.textContent || '').trim().replace(/\\s+/g, ' ');
+                    if (!text || !isVisible(el)) continue;
+                    items.push({ idx: i, text: text, score: 0 });
+                }
+
+                if (items.length === 0) return JSON.stringify({ clicked: false, reason: 'no_visible_items' });
+
+                for (var j = 0; j < items.length; j++) {
+                    var lower = items[j].text.toLowerCase();
+                    if (lower.indexOf('general sales') !== -1 || lower.indexOf('general sale') !== -1) {
+                        items[j].score += 100;
+                    }
+                    if (lower.indexOf('vip') !== -1 || lower.indexOf('upgrade') !== -1) {
+                        items[j].score -= 25;
+                    }
+                    if (lower.indexOf('sold out') !== -1 || lower.indexOf('unavailable') !== -1) {
+                        items[j].score -= 100;
+                    }
+                }
+
+                items.sort(function(a, b) {
+                    if (b.score !== a.score) return b.score - a.score;
+                    return a.idx - b.idx;
+                });
+
+                var targetInfo = items[0];
+                var target = candidates[targetInfo.idx];
+                target.click();
+                return JSON.stringify({
+                    clicked: true,
+                    text: targetInfo.text,
+                    score: targetInfo.score
+                });
+            })()
+        ''')
+
+        data = json.loads(result) if result else {}
+        if data.get("clicked"):
+            debug.log(f"[GOLIVEASIA EVENT] Sale option clicked: {data.get('text', '')}")
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+            return True
+
+    except Exception as exc:
+        debug.log(f"[GOLIVEASIA EVENT] Sale dropdown error: {str(exc)}")
+
+    return False
+
+
 async def _check_logged_in(tab):
     """Check if user is logged in on golive-asia.com."""
     try:
@@ -203,6 +317,10 @@ async def _goliveasia_event_detail(tab, config_dict):
 
     # Guard: don't keep clicking BUY NOW in a loop
     if _state.get("buy_now_clicked", False):
+        dropdown_handled = await _handle_buy_now_dropdown(tab, config_dict)
+        if dropdown_handled:
+            return True
+
         # Check if a login modal appeared
         modal_handled = await _handle_login_modal(tab, config_dict)
         if modal_handled:
@@ -252,6 +370,10 @@ async def _goliveasia_event_detail(tab, config_dict):
             # Check if login modal appeared instead of redirect
             modal_handled = await _handle_login_modal(tab, config_dict)
             if modal_handled:
+                return True
+
+            dropdown_handled = await _handle_buy_now_dropdown(tab, config_dict)
+            if dropdown_handled:
                 return True
 
             return True
@@ -391,7 +513,8 @@ async def _ttm_accept_conditions(tab, config_dict):
             (function() {
                 var buttons = document.querySelectorAll('button');
                 for (var i = 0; i < buttons.length; i++) {
-                    if (buttons[i].textContent.trim() === 'Buy Ticket') {
+                    var txt = buttons[i].textContent.trim().toLowerCase();
+                    if (txt === 'buy ticket') {
                         buttons[i].click();
                         return true;
                     }
@@ -413,17 +536,220 @@ async def _ttm_accept_conditions(tab, config_dict):
     return False
 
 
+async def _ttm_select_date(tab, config_dict):
+    """Zones page date selector — choose #rdId before selecting a section."""
+    debug = util.create_debug_logger(config_dict)
+
+    date_auto_select = config_dict.get("date_auto_select", {})
+    auto_select_mode = date_auto_select.get("mode", CONST_FROM_TOP_TO_BOTTOM)
+    date_keyword = date_auto_select.get("date_keyword", "").strip()
+    date_auto_fallback = config_dict.get("date_auto_fallback", False)
+
+    try:
+        await asyncio.sleep(random.uniform(0.3, 0.6))
+
+        dates_json = await tab.evaluate('''
+            (function() {
+                var select = document.querySelector('select#rdId, select[name="rdId"]');
+                if (!select) return JSON.stringify({ found: false, current: "", options: [] });
+
+                var options = [];
+                for (var i = 0; i < select.options.length; i++) {
+                    var opt = select.options[i];
+                    var text = (opt.textContent || '').trim();
+                    var value = opt.value || '';
+                    if (value && !opt.disabled) {
+                        options.push({
+                            idx: i,
+                            text: text,
+                            value: value,
+                            selected: opt.selected
+                        });
+                    }
+                }
+
+                return JSON.stringify({
+                    found: true,
+                    current: select.value || "",
+                    options: options
+                });
+            })()
+        ''')
+
+        date_info = json.loads(dates_json) if dates_json else {}
+        if not date_info.get("found"):
+            return True
+
+        current_round = date_info.get("current", "")
+        if current_round:
+            _state["selected_round"] = current_round
+            debug.log(f"[GOLIVEASIA DATE] Round already selected: {current_round}")
+            return True
+
+        if not date_auto_select.get("enable", True):
+            debug.log("[GOLIVEASIA DATE] Date auto-select disabled, waiting for manual date selection")
+            return False
+
+        date_options = date_info.get("options", [])
+        debug.log(f"[GOLIVEASIA DATE] Found {len(date_options)} date options")
+        if len(date_options) == 0:
+            debug.log("[GOLIVEASIA DATE] No selectable dates")
+            return False
+
+        matched_dates = []
+        if len(date_keyword) == 0:
+            matched_dates = date_options
+        else:
+            debug.log(f"[GOLIVEASIA DATE] Matching keyword: {date_keyword}")
+            for date_item in date_options:
+                row_text = date_item.get("text", "")
+                debug.log(f"[GOLIVEASIA DATE] row_text: {row_text}")
+                if util.is_row_match_keyword(date_keyword, row_text):
+                    matched_dates.append(date_item)
+                    if auto_select_mode == CONST_FROM_TOP_TO_BOTTOM:
+                        break
+
+        debug.log(f"[GOLIVEASIA DATE] Matched {len(matched_dates)} dates")
+
+        if len(matched_dates) == 0:
+            if date_auto_fallback:
+                matched_dates = date_options
+                debug.log("[GOLIVEASIA DATE] date_auto_fallback=true, selecting from all dates")
+            else:
+                debug.log("[GOLIVEASIA DATE] date_auto_fallback=false, waiting for manual date selection")
+                return False
+
+        target_date = util.get_target_item_from_matched_list(matched_dates, auto_select_mode)
+        if not target_date:
+            debug.log("[GOLIVEASIA DATE] No target date selected")
+            return False
+
+        target_value = target_date.get("value", "")
+        target_text = target_date.get("text", "")
+        debug.log(f"[GOLIVEASIA DATE] Selecting date: {target_text} ({target_value})")
+
+        selected = await tab.evaluate(f'''
+            (function() {{
+                var select = document.querySelector('select#rdId, select[name="rdId"]');
+                if (!select) return false;
+                select.value = {json.dumps(target_value)};
+                select.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                select.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                return select.value === {json.dumps(target_value)};
+            }})()
+        ''')
+
+        if selected:
+            _state["selected_round"] = target_value
+            await asyncio.sleep(random.uniform(1.0, 1.5))
+            return True
+
+        debug.log("[GOLIVEASIA DATE] Failed to set date select value")
+
+    except Exception as exc:
+        debug.log(f"[GOLIVEASIA DATE] Error: {str(exc)}")
+
+    return False
+
+
+async def _ttm_get_available_zones(tab, config_dict):
+    """Read the Seats Available popup data without opening the popup."""
+    debug = util.create_debug_logger(config_dict)
+
+    try:
+        availability_json = await tab.evaluate('''
+            (async function() {
+                var select = document.querySelector('select#rdId, select[name="rdId"]');
+                var round = select ? select.value : '';
+                if (!round) {
+                    var params = new URLSearchParams(location.search);
+                    round = params.get('rdId') || params.get('round') || '';
+                }
+                if (!round) return JSON.stringify([]);
+
+                try {
+                    var response = await fetch('zonesavail.php?round=' + encodeURIComponent(round), {
+                        credentials: 'include'
+                    });
+                    var html = await response.text();
+                    var doc = new DOMParser().parseFromString(html, 'text/html');
+                    var rows = doc.querySelectorAll('#avail_data tbody tr, table tbody tr');
+                    var zones = [];
+
+                    for (var i = 0; i < rows.length; i++) {
+                        var row = rows[i];
+                        var cells = row.querySelectorAll('td');
+                        if (cells.length < 2) continue;
+
+                        var sectionText = (cells[0].textContent || '').trim();
+                        var statusText = (cells[1].textContent || '').trim();
+                        var onclick = row.getAttribute('onclick') || '';
+                        var section = '';
+                        var type = 'fixed';
+
+                        var link = cells[0].querySelector('a[id]');
+                        if (link && link.id) section = link.id;
+
+                        var match = onclick.match(/gonextstep\\(['"]([^'"]+)['"]\\s*,\\s*['"]([^'"]+)['"]/);
+                        if (match) {
+                            type = match[1].replace(/\\.php$/, '');
+                            section = match[2];
+                        }
+
+                        if (!section) {
+                            section = sectionText.split(/\\s+/)[0];
+                        }
+
+                        if (section && /available/i.test(statusText)) {
+                            zones.push({
+                                type: type,
+                                section: section,
+                                text: sectionText,
+                                status: statusText,
+                                idx: i
+                            });
+                        }
+                    }
+
+                    return JSON.stringify(zones);
+                } catch (err) {
+                    return JSON.stringify([]);
+                }
+            })()
+        ''')
+
+        available_zones = json.loads(availability_json) if availability_json else []
+        if available_zones:
+            debug.log(
+                f"[GOLIVEASIA AVAIL] Found available zones: "
+                f"{[zone.get('text') or zone.get('section') for zone in available_zones]}"
+            )
+        else:
+            debug.log("[GOLIVEASIA AVAIL] No available-zone rows found")
+        return available_zones
+
+    except Exception as exc:
+        debug.log(f"[GOLIVEASIA AVAIL] Error: {str(exc)}")
+
+    return []
+
+
 async def _ttm_select_zone(tab, config_dict):
     """Zone/section selection page (Step 1/4) — select area from image map."""
     debug = util.create_debug_logger(config_dict)
 
-    area_keyword = config_dict["area_auto_select"].get("area_keyword", "").strip()
-    auto_select_mode = config_dict["area_auto_select"].get("mode", CONST_FROM_TOP_TO_BOTTOM)
+    area_auto_select = config_dict.get("area_auto_select", {})
+    area_keyword = area_auto_select.get("area_keyword", "").strip()
+    auto_select_mode = area_auto_select.get("mode", CONST_FROM_TOP_TO_BOTTOM)
 
     debug.log(f"[GOLIVEASIA ZONE] keyword: {area_keyword}, mode: {auto_select_mode}")
 
     try:
         await asyncio.sleep(random.uniform(0.5, 1.0))
+
+        if not area_auto_select.get("enable", True):
+            debug.log("[GOLIVEASIA ZONE] Area auto-select disabled, waiting for manual section selection")
+            return False
 
         # Gather all area zones from the image map
         zones_json = await tab.evaluate('''
@@ -453,16 +779,65 @@ async def _ttm_select_zone(tab, config_dict):
             debug.log("[GOLIVEASIA ZONE] No zones found on page")
             return False
 
+        available_zones = await _ttm_get_available_zones(tab, config_dict)
+        if available_zones:
+            zones_by_section = {zone["section"]: zone for zone in zones}
+            prioritized_zones = []
+            for available_zone in available_zones:
+                section = available_zone.get("section", "")
+                zone = zones_by_section.get(section)
+                if zone:
+                    merged_zone = dict(zone)
+                    merged_zone["availability_text"] = available_zone.get("text", "")
+                    merged_zone["availability_status"] = available_zone.get("status", "")
+                    prioritized_zones.append(merged_zone)
+
+            if prioritized_zones:
+                debug.log(
+                    f"[GOLIVEASIA ZONE] Prioritizing available zones: "
+                    f"{[zone.get('availability_text') or zone['section'] for zone in prioritized_zones]}"
+                )
+                zones = prioritized_zones
+            else:
+                debug.log("[GOLIVEASIA ZONE] Available rows did not match image-map zones; using image map")
+
+        filtered_zones = []
+        for zone in zones:
+            row_text = " ".join([
+                zone.get("section", ""),
+                zone.get("availability_text", ""),
+                zone.get("availability_status", ""),
+            ]).strip()
+            if _is_excluded_by_keyword(config_dict, row_text):
+                debug.log(f"[GOLIVEASIA ZONE] Excluded by keyword_exclude: {row_text}")
+                continue
+            filtered_zones.append(zone)
+
+        zones = filtered_zones
+        if len(zones) == 0:
+            debug.log("[GOLIVEASIA ZONE] All zones excluded by keyword_exclude")
+            return False
+
         # Filter by keyword if provided
         matched = zones
         if area_keyword:
-            keywords = [kw.strip() for kw in area_keyword.split(',') if kw.strip()]
             matched = []
             for zone in zones:
-                for keyword in keywords:
-                    if keyword.upper() in zone['section'].upper():
-                        matched.append(zone)
-                        break
+                row_text = " ".join([
+                    zone.get("section", ""),
+                    zone.get("availability_text", ""),
+                    zone.get("availability_status", ""),
+                ]).strip()
+                is_match_area = util.is_row_match_keyword(area_keyword, row_text)
+                if not is_match_area:
+                    keywords = [kw.strip() for kw in area_keyword.split(',') if kw.strip()]
+                    for keyword in keywords:
+                        if keyword.upper() in row_text.upper():
+                            is_match_area = True
+                            break
+
+                if is_match_area:
+                    matched.append(zone)
 
             if not matched:
                 area_auto_fallback = config_dict.get('area_auto_fallback', False)
@@ -522,8 +897,10 @@ async def _ttm_select_seats(tab, config_dict):
     """Seat selection page (Step 2/4) — pick available seats from grid."""
     debug = util.create_debug_logger(config_dict)
     ticket_number = config_dict.get("ticket_number", 2)
+    allow_non_adjacent = config_dict.get("advanced", {}).get("disable_adjacent_seat", False)
 
     debug.log(f"[GOLIVEASIA SEAT] Target ticket count: {ticket_number}")
+    debug.log(f"[GOLIVEASIA SEAT] Allow non-adjacent seats: {allow_non_adjacent}")
 
     try:
         await asyncio.sleep(random.uniform(0.5, 1.0))
@@ -531,16 +908,47 @@ async def _ttm_select_seats(tab, config_dict):
         # Find all available (clickable) seats
         seats_json = await tab.evaluate('''
             (function() {
-                var cells = document.querySelectorAll('td[id^="checkseat-"]');
+                function parseSeat(raw) {
+                    raw = raw || '';
+                    var match = raw.match(/^([A-Za-z]+)-0*(\\d+)/);
+                    if (!match) match = raw.match(/^([A-Za-z]+)\\s*0*(\\d+)/);
+                    if (!match) return { row: '', number: null };
+                    return {
+                        row: match[1],
+                        number: parseInt(match[2], 10)
+                    };
+                }
+
+                var cells = document.querySelectorAll(
+                    'td[id^="checkseat-"], div[id^="checkseat-"].seatuncheck, div[id^="checkseat-"][data-seat]'
+                );
                 var available = [];
                 for (var i = 0; i < cells.length; i++) {
                     var cell = cells[i];
                     var style = window.getComputedStyle(cell);
-                    if (style.cursor === 'pointer' || cell.getAttribute('data-available') === 'true') {
+                    var isSeatUnavailable = (
+                        cell.classList.contains('seatnotavail') ||
+                        cell.classList.contains('not-available') ||
+                        cell.closest('.not-available')
+                    );
+                    if (!isSeatUnavailable && (
+                        style.cursor === 'pointer' ||
+                        cell.classList.contains('seatuncheck') ||
+                        cell.getAttribute('data-seat') ||
+                        cell.getAttribute('data-available') === 'true'
+                    )) {
+                        var rawSeat = cell.getAttribute('data-seat') ||
+                            cell.getAttribute('title') ||
+                            (cell.closest('td') ? cell.closest('td').getAttribute('title') : '') ||
+                            cell.id.replace(/^checkseat-/, '') ||
+                            cell.textContent.trim();
+                        var parsedSeat = parseSeat(rawSeat);
                         available.push({
                             idx: i,
                             id: cell.id,
-                            text: cell.textContent.trim()
+                            text: rawSeat,
+                            row: parsedSeat.row,
+                            number: parsedSeat.number
                         });
                     }
                 }
@@ -549,6 +957,7 @@ async def _ttm_select_seats(tab, config_dict):
         ''')
 
         available_seats = json.loads(seats_json) if seats_json else []
+        available_seats = sorted(available_seats, key=_seat_sort_key)
         debug.log(f"[GOLIVEASIA SEAT] Found {len(available_seats)} available seats")
 
         if len(available_seats) == 0:
@@ -570,7 +979,17 @@ async def _ttm_select_seats(tab, config_dict):
             return True
 
         # Select up to ticket_number seats
-        to_select = available_seats[:ticket_number]
+        to_select = _select_target_seats(available_seats, ticket_number, allow_non_adjacent)
+        if len(to_select) < ticket_number:
+            current_url = tab.url if hasattr(tab, 'url') else str(tab.target.url)
+            reason = f"No adjacent block for requested {ticket_number}"
+            if allow_non_adjacent:
+                reason = f"Only {len(to_select)} selectable seats for requested {ticket_number}"
+            _mark_current_zone_failed(current_url, debug, reason)
+
+            await _ttm_back_to_zones(tab, config_dict)
+            return True
+
         selected_count = 0
 
         for seat in to_select:
@@ -844,7 +1263,16 @@ async def nodriver_goliveasia_main(tab, url, config_dict):
         elif 'zones.php' in url:
             # Step 1/4: Zone/section selection
             _state["last_zones_url"] = url
-            result = await _ttm_select_zone(tab, config_dict)
+            is_date_ready = await _ttm_select_date(tab, config_dict)
+            if is_date_ready:
+                current_url = _get_current_url(tab)
+                if current_url != url:
+                    _state["last_zones_url"] = current_url
+                    result = True
+                else:
+                    result = await _ttm_select_zone(tab, config_dict)
+            else:
+                result = False
 
         elif 'fixed.php' in url:
             # Step 2/4: Fixed/reserved seat selection
