@@ -79,6 +79,7 @@ const ticketplus_account = document.querySelector('#ticketplus_account');
 const cityline_account = document.querySelector('#cityline_account');
 const urbtix_account = document.querySelector('#urbtix_account');
 const hkticketing_account = document.querySelector('#hkticketing_account');
+const goliveasia_account = document.querySelector('#goliveasia_account');
 
 const facebook_password = document.querySelector('#facebook_password');
 const kktix_password = document.querySelector('#kktix_password');
@@ -90,6 +91,7 @@ const ticketplus_password = document.querySelector('#ticketplus_password');
 const discount_code = document.querySelector('#discount_code');
 const urbtix_password = document.querySelector('#urbtix_password');
 const hkticketing_password = document.querySelector('#hkticketing_password');
+const goliveasia_password = document.querySelector('#goliveasia_password');
 
 // runtime
 const idle_keyword = document.querySelector('#idle_keyword');
@@ -168,6 +170,7 @@ const PLATFORM_MAP = [
     { key: 'ticketplus',  domains: ['ticketplus.com'] },
     { key: 'cityline',    domains: ['cityline.com'] },
     { key: 'hkticketing', domains: ['hkticketing.com', 'galaxymacau.com', 'ticketek.com'] },
+    { key: 'goliveasia',  domains: ['golive-asia.com', 'golive-asia.thaiticketmajor.com'] },
     { key: 'funone',      domains: ['funone.io'] },
     { key: 'fansigo',     domains: ['fansi.me'] },
     { key: 'urbtix',      domains: ['urbtix.hk'] },
@@ -324,6 +327,7 @@ function load_settins_to_form(settings)
         cityline_account.value = settings.accounts.cityline_account;
         urbtix_account.value = settings.accounts.urbtix_account;
         hkticketing_account.value = settings.accounts.hkticketing_account;
+        goliveasia_account.value = settings.accounts.goliveasia_account || '';
 
         facebook_password.value = settings.accounts.facebook_password;
         kktix_password.value = settings.accounts.kktix_password;
@@ -335,6 +339,7 @@ function load_settins_to_form(settings)
         discount_code.value = settings.advanced.discount_code || '';
         urbtix_password.value = settings.accounts.urbtix_password;
         hkticketing_password.value = settings.accounts.hkticketing_password;
+        goliveasia_password.value = settings.accounts.goliveasia_password || '';
 
         // runtime
         idle_keyword.value = settings.advanced.idle_keyword;
@@ -575,6 +580,7 @@ function save_changes_to_dict(silent_flag)
             settings.accounts.cityline_account = cityline_account.value;
             settings.accounts.urbtix_account = urbtix_account.value;
             settings.accounts.hkticketing_account = hkticketing_account.value;
+            settings.accounts.goliveasia_account = goliveasia_account.value;
 
             settings.accounts.facebook_password = facebook_password.value;
             settings.accounts.kktix_password = kktix_password.value;
@@ -586,6 +592,7 @@ function save_changes_to_dict(silent_flag)
             settings.advanced.discount_code = discount_code.value;
             settings.accounts.urbtix_password = urbtix_password.value;
             settings.accounts.hkticketing_password = hkticketing_password.value;
+            settings.accounts.goliveasia_password = goliveasia_password.value;
 
             // runtime
             settings.advanced.idle_keyword = idle_keyword.value;
@@ -695,6 +702,7 @@ function check_unsaved_fields()
             "cityline_account",
             "urbtix_account",
             "hkticketing_account",
+            "goliveasia_account",
             "kham_account",
             "ticket_account",
             "udn_account",
@@ -704,6 +712,7 @@ function check_unsaved_fields()
             "fami_password",
             "urbtix_password",
             "hkticketing_password",
+            "goliveasia_password",
             "kham_password",
             "ticket_password",
             "udn_password",
