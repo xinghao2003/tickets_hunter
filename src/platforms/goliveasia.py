@@ -21,6 +21,7 @@ Purchase flow (ticketing engine hosted on golive-asia.thaiticketmajor.com):
 import asyncio
 import json
 import random
+import time
 import traceback
 import urllib.parse
 
@@ -1215,6 +1216,62 @@ async def _ttm_enroll(tab, config_dict):
     return False
 
 
+async def _goliveasia_check_queue_status(tab, config_dict, force_show_debug=False):
+    """Detect in-page/overlay queue indicators (non Queue-IT)."""
+    debug = util.create_debug_logger(config_dict)
+
+    try:
+        result = await tab.evaluate('''
+            (function() {
+                const queueKeywords = [
+                    'in the queue',
+                    'please wait',
+                    'you are in the queue',
+                    '\u6392\u968a',
+                    '\u8acb\u7a0d\u5019',
+                    'please do not leave this page',
+                    'waiting room',
+                ];
+
+                const bodyText = document.body.textContent || '';
+                const hasQueueKeyword = queueKeywords.some(keyword => bodyText.toLowerCase().includes(keyword));
+
+                const overlayScrim = document.querySelector('[class*="overlay"], .v-overlay__scrim, .modal-backdrop');
+                const hasOverlay = overlayScrim && (overlayScrim.style.opacity === '1' || overlayScrim.style.display !== 'none');
+
+                const dialogText = (document.querySelector('[role="dialog"], .v-dialog, .modal')?.textContent || '').trim();
+                const hasQueueDialog = dialogText && (dialogText.toLowerCase().includes('queue') || dialogText.indexOf('\u6392\u968a') !== -1 || dialogText.indexOf('\u8acb\u7a0d\u5019') !== -1);
+
+                return {
+                    inQueue: hasQueueKeyword || hasOverlay || hasQueueDialog,
+                    foundKeywords: hasQueueKeyword ? queueKeywords.filter(k => bodyText.toLowerCase().includes(k)) : [],
+                    hasOverlay: !!hasOverlay,
+                    hasQueueDialog: !!hasQueueDialog,
+                    dialogText: hasQueueDialog ? dialogText : ''
+                };
+            })()
+        ''')
+
+        result = util.parse_nodriver_result(result)
+        if isinstance(result, dict):
+            is_in_queue = result.get('inQueue', False)
+            if is_in_queue and force_show_debug:
+                debug.log('[GOLIVEASIA QUEUE] Queue status detected')
+                if result.get('hasOverlay'):
+                    debug.log('   Overlay scrim found')
+                if result.get('hasQueueDialog'):
+                    debug.log(f"   Dialog content: {result.get('dialogText', '')}")
+                if result.get('foundKeywords'):
+                    debug.log(f"   Keywords found: {result.get('foundKeywords')}")
+            return is_in_queue
+
+        return False
+
+    except Exception as exc:
+        debug.log(f"[GOLIVEASIA QUEUE] detection error: {exc}")
+        return False
+
+
 # ---------- Main router ----------
 
 async def nodriver_goliveasia_main(tab, url, config_dict):
@@ -1235,6 +1292,33 @@ async def nodriver_goliveasia_main(tab, url, config_dict):
     debug.log(f"[GOLIVEASIA MAIN] URL: {url[:80]}...")
 
     result = False
+
+    # ----- Queue handling -----
+    try:
+        url_lower = url.lower()
+        # Queue-IT URL-based waiting room
+        if 'queue-it.net' in url_lower:
+            if _state.get("queue_it_enter_time") is None:
+                _state["queue_it_enter_time"] = time.time()
+                debug.log("[GOLIVEASIA] Queue-IT entered, waiting...")
+            return False
+        else:
+            if _state.get("queue_it_enter_time") is not None:
+                elapsed = time.time() - _state["queue_it_enter_time"]
+                debug.log(f"[GOLIVEASIA] Queue-IT passed (waited {elapsed:.1f}s)")
+                _state["queue_it_enter_time"] = None
+
+        # In-page / overlay-based queue detection (similar to TicketPlus)
+        try:
+            is_overlay_queue = await _goliveasia_check_queue_status(tab, config_dict)
+            if is_overlay_queue:
+                return False
+        except Exception:
+            # Non-fatal — continue routing if detection fails
+            pass
+    except Exception:
+        # Keep processing even if queue checks throw
+        pass
 
     try:
         # ===== Payment / success detection =====
