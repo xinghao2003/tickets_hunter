@@ -493,6 +493,180 @@ async def _goliveasia_login(tab, config_dict):
 
 # ---------- golive-asia.thaiticketmajor.com (booking engine) ----------
 
+def _get_access_codes(config_dict):
+    advanced = config_dict.get("advanced", {})
+    accounts = config_dict.get("accounts", {})
+    raw_code = advanced.get("discount_code", "") or accounts.get("discount_code", "")
+    if not raw_code:
+        return []
+
+    codes = []
+    for chunk in str(raw_code).replace("\r", "\n").replace(";", "\n").split("\n"):
+        code = chunk.strip()
+        if code:
+            codes.append(code)
+    return codes
+
+
+async def _focus_tab_for_manual_action(tab, debug):
+    try:
+        if hasattr(tab, "activate"):
+            await tab.activate()
+    except Exception as exc:
+        debug.log(f"[GOLIVEASIA QUEUE] Browser tab activate failed: {str(exc)}")
+
+    try:
+        await tab.evaluate('''
+            (function() {
+                window.focus();
+                if (document.body) document.body.focus();
+                return true;
+            })()
+        ''')
+    except Exception:
+        pass
+
+
+async def _notify_human_verification_required(tab, config_dict, debug):
+    current_url = _get_current_url(tab)
+    notified_url = _state.get("ttm_human_verification_notified_url", "")
+    last_notified_at = _state.get("ttm_human_verification_notified_at", 0)
+    now = time.time()
+    if notified_url == current_url and now - last_notified_at < 300:
+        return
+
+    message = "[GoLive Asia] Human verification required. Please check your computer."
+    debug.log("[GOLIVEASIA QUEUE] Human verification required; notifying user")
+    _state["ttm_human_verification_notified_url"] = current_url
+    _state["ttm_human_verification_notified_at"] = now
+
+    try:
+        play_sound_while_ordering(config_dict)
+    except Exception as exc:
+        debug.log(f"[GOLIVEASIA QUEUE] Sound notification failed: {str(exc)}")
+
+    advanced = config_dict.get("advanced", {})
+    verbose = advanced.get("verbose", False)
+    webhook_url = advanced.get("discord_webhook_url", "")
+    if webhook_url:
+        util.send_discord_webhook_async(
+            webhook_url,
+            "ticket",
+            "goliveasia",
+            verbose=verbose,
+            custom_message=message,
+        )
+
+    bot_token = advanced.get("telegram_bot_token", "")
+    chat_id = advanced.get("telegram_chat_id", "")
+    if bot_token and chat_id:
+        util.send_telegram_message_async(
+            bot_token,
+            chat_id,
+            "ticket",
+            "goliveasia",
+            verbose=verbose,
+            custom_message=message,
+        )
+
+    await _focus_tab_for_manual_action(tab, debug)
+
+
+async def _ttm_enter_access_code(tab, config_dict):
+    """Access-code gate for presale/member/exclusive entry."""
+    debug = util.create_debug_logger(config_dict)
+    codes = _get_access_codes(config_dict)
+
+    if not codes:
+        debug.log("[GOLIVEASIA VERIFY] Access code required; set advanced.discount_code")
+        return False
+
+    current_url = _get_current_url(tab)
+    attempts = _state.setdefault("access_code_attempts", {})
+    attempt = attempts.setdefault(current_url, {"index": 0, "last_submit_at": 0})
+    elapsed = time.time() - attempt.get("last_submit_at", 0)
+    if elapsed < 8:
+        return False
+
+    code_index = attempt.get("index", 0)
+    if code_index >= len(codes):
+        if elapsed < 30:
+            debug.log("[GOLIVEASIA VERIFY] All configured access codes tried; waiting before retry")
+            return False
+        code_index = 0
+        attempt["index"] = 0
+
+    access_code = codes[code_index]
+    access_code_json = json.dumps(access_code)
+    debug.log(f"[GOLIVEASIA VERIFY] Entering access code #{code_index + 1}")
+
+    try:
+        result = await tab.evaluate(f'''
+            (function() {{
+                function fire(el) {{
+                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }}
+
+                var bodyText = document.body.textContent || '';
+                var bodyLower = bodyText.toLowerCase();
+                var buttons = document.querySelectorAll('button, input[type="submit"]');
+
+                if (bodyLower.indexOf('pass-code incorrect') !== -1 ||
+                    bodyLower.indexOf('passcode incorrect') !== -1 ||
+                    bodyLower.indexOf('code incorrect') !== -1 ||
+                    bodyLower.indexOf('incorrect. please re-enter') !== -1) {{
+                    for (var r = 0; r < buttons.length; r++) {{
+                        var retryText = (buttons[r].textContent || buttons[r].value || '').trim().toLowerCase();
+                        if (retryText.indexOf('try again') !== -1 || retryText === 'ok') {{
+                            buttons[r].click();
+                            return 'wrong_code_retry_clicked';
+                        }}
+                    }}
+                    return 'wrong_code_waiting';
+                }}
+
+                var input = document.querySelector(
+                    'input[type="text"], input:not([type]), textarea, input[placeholder*="access" i], input[aria-label*="access" i]'
+                );
+                if (!input) return 'input_not_found';
+
+                input.focus();
+                input.value = {access_code_json};
+                fire(input);
+
+                for (var i = 0; i < buttons.length; i++) {{
+                    var txt = (buttons[i].textContent || buttons[i].value || '').trim().toLowerCase();
+                    if (txt === 'ok' || txt.indexOf('submit') !== -1 || txt.indexOf('confirm') !== -1) {{
+                        buttons[i].click();
+                        return 'submitted';
+                    }}
+                }}
+
+                return 'button_not_found';
+            }})()
+        ''')
+
+        if result == "submitted":
+            attempt["index"] = code_index + 1
+            attempt["last_submit_at"] = time.time()
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+            return True
+
+        if result in ("wrong_code_retry_clicked", "wrong_code_waiting"):
+            debug.log("[GOLIVEASIA VERIFY] Access code rejected; preparing next configured code")
+            attempt["last_submit_at"] = time.time()
+            await asyncio.sleep(random.uniform(0.8, 1.5))
+            return False
+
+        debug.log(f"[GOLIVEASIA VERIFY] Access code result: {result}")
+        return False
+
+    except Exception as exc:
+        debug.log(f"[GOLIVEASIA VERIFY] Error: {str(exc)}")
+        return False
+
+
 async def _ttm_accept_conditions(tab, config_dict):
     """Conditions page — accept T&Cs and click Buy Ticket."""
     debug = util.create_debug_logger(config_dict)
@@ -1299,9 +1473,36 @@ async def _ttm_waiting_room(tab, config_dict):
                 }
 
                 var bodyText = document.body.textContent || '';
+                var bodyLower = bodyText.toLowerCase();
+
+                if (
+                    bodyLower.indexOf('verify you are human') !== -1 ||
+                    bodyLower.indexOf('complete the challenge') !== -1 ||
+                    bodyLower.indexOf('drag the slider') !== -1
+                ) {
+                    return JSON.stringify({ action: 'human_verification_required' });
+                }
+
                 var buttons = document.querySelectorAll('button');
                 for (var i = 0; i < buttons.length; i++) {
                     var buttonText = (buttons[i].textContent || '').trim().toLowerCase();
+                    var dialog = buttons[i].closest('[role="dialog"], .modal, .v-dialog');
+                    var dialogText = dialog ? (dialog.textContent || '').toLowerCase() : '';
+                    var isStillHereDialog = (
+                        dialogText.indexOf('still here') !== -1 ||
+                        dialogText.indexOf("you're still waiting") !== -1 ||
+                        dialogText.indexOf('you are still waiting') !== -1
+                    );
+                    if (isVisible(buttons[i]) && (
+                        buttonText.indexOf("yes, i'm here") !== -1 ||
+                        buttonText.indexOf('yes, i am here') !== -1 ||
+                        buttonText === "i'm here" ||
+                        buttonText === 'i am here' ||
+                        (isStillHereDialog && buttonText.indexOf('yes') !== -1)
+                    )) {
+                        buttons[i].click();
+                        return JSON.stringify({ action: 'confirmed_still_here' });
+                    }
                     if (isVisible(buttons[i]) && buttonText.indexOf('join waiting room') !== -1) {
                         buttons[i].click();
                         return JSON.stringify({ action: 'joined_waiting_room' });
@@ -1311,12 +1512,12 @@ async def _ttm_waiting_room(tab, config_dict):
                 var queueIdMatch = bodyText.match(/Queue ID:\\s*([a-f0-9-]+)/i);
                 if (queueIdMatch) {
                     return JSON.stringify({
-                        action: 'waiting_with_queue_id',
+                        action: bodyLower.indexOf('buying queue') !== -1 ? 'buying_queue_with_queue_id' : 'waiting_with_queue_id',
                         queueId: queueIdMatch[1]
                     });
                 }
 
-                if (bodyText.toLowerCase().indexOf('you are now in the entry zone') !== -1) {
+                if (bodyLower.indexOf('you are now in the entry zone') !== -1) {
                     return JSON.stringify({ action: 'entry_zone_waiting' });
                 }
 
@@ -1327,17 +1528,30 @@ async def _ttm_waiting_room(tab, config_dict):
         data = json.loads(result) if result else {}
         action = data.get("action", "waiting_room")
 
-        if action == "joined_waiting_room":
+        if action == "confirmed_still_here":
+            now = time.time()
+            last_confirm_logged = _state.get("ttm_wait_last_confirm_logged", 0)
+            if now - last_confirm_logged > 30:
+                debug.log("[GOLIVEASIA QUEUE] Confirmed still waiting in ThaiTicketMajor room")
+                _state["ttm_wait_last_confirm_logged"] = now
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+        elif action == "human_verification_required":
+            await _notify_human_verification_required(tab, config_dict, debug)
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+        elif action == "joined_waiting_room":
             if not _state.get("ttm_wait_join_logged", False):
                 debug.log("[GOLIVEASIA QUEUE] Joined ThaiTicketMajor waiting room")
                 _state["ttm_wait_join_logged"] = True
             await asyncio.sleep(random.uniform(1.0, 2.0))
-        elif action == "waiting_with_queue_id":
+        elif action in ("waiting_with_queue_id", "buying_queue_with_queue_id"):
             queue_id = data.get("queueId", "")
             last_queue_id = _state.get("ttm_wait_queue_id", "")
-            if queue_id and queue_id != last_queue_id:
-                debug.log(f"[GOLIVEASIA QUEUE] Waiting in ThaiTicketMajor room; Queue ID: {queue_id}")
+            queue_state = "buying queue" if action == "buying_queue_with_queue_id" else "waiting room"
+            last_queue_state = _state.get("ttm_wait_queue_state", "")
+            if queue_id and (queue_id != last_queue_id or queue_state != last_queue_state):
+                debug.log(f"[GOLIVEASIA QUEUE] Waiting in ThaiTicketMajor {queue_state}; Queue ID: {queue_id}")
                 _state["ttm_wait_queue_id"] = queue_id
+                _state["ttm_wait_queue_state"] = queue_state
             await asyncio.sleep(random.uniform(1.0, 2.0))
         else:
             if not _state.get("ttm_wait_logged", False):
@@ -1440,7 +1654,11 @@ async def nodriver_goliveasia_main(tab, url, config_dict):
         # ===== golive-asia.thaiticketmajor.com pages =====
         _state["buy_now_clicked"] = False
 
-        if 'verify_condition' in url:
+        if 'verify.php' in url:
+            # Access-code gate for presale/member/exclusive queue entry.
+            result = await _ttm_enter_access_code(tab, config_dict)
+
+        elif 'verify_condition' in url:
             # Conditions page — accept T&Cs
             _state["fail_list"] = []
             _state["current_zone"] = ""
