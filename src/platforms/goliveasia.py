@@ -735,9 +735,79 @@ async def _ttm_enter_access_code(tab, config_dict):
         attempt["index"] = 0
         attempt["last_wait_log_at"] = 0
 
+    try:
+        rejection_result = await tab.evaluate('''
+            (function() {
+                if (!document.body) return 'document_not_ready';
+
+                var bodyText = document.body.textContent || '';
+                var bodyLower = bodyText.toLowerCase();
+                if (bodyLower.indexOf('pass-code incorrect') === -1 &&
+                    bodyLower.indexOf('passcode incorrect') === -1 &&
+                    bodyLower.indexOf('code incorrect') === -1 &&
+                    bodyLower.indexOf('incorrect. please re-enter') === -1) {
+                    return 'no_rejection';
+                }
+
+                function isVisible(el) {
+                    if (!el) return false;
+                    var rect = el.getBoundingClientRect();
+                    var style = window.getComputedStyle(el);
+                    return rect.width > 0 && rect.height > 0 &&
+                        style.display !== 'none' &&
+                        style.visibility !== 'hidden' &&
+                        style.opacity !== '0';
+                }
+
+                var candidates = document.querySelectorAll(
+                    'button, input[type="submit"], input[type="button"], a, [role="button"], .btn, [onclick]'
+                );
+                var fallback = null;
+                for (var r = 0; r < candidates.length; r++) {
+                    if (!isVisible(candidates[r])) continue;
+                    var retryText = (
+                        candidates[r].textContent ||
+                        candidates[r].value ||
+                        candidates[r].getAttribute('aria-label') ||
+                        candidates[r].getAttribute('title') ||
+                        ''
+                    ).trim().toLowerCase();
+                    if (!retryText) continue;
+                    if (
+                        retryText.indexOf('try again') !== -1 ||
+                        retryText.indexOf('retry') !== -1 ||
+                        retryText.indexOf('re-enter') !== -1
+                    ) {
+                        candidates[r].click();
+                        return 'wrong_code_retry_clicked';
+                    }
+                    if (!fallback && (retryText === 'ok' || retryText === 'close' || retryText === 'confirm')) {
+                        fallback = candidates[r];
+                    }
+                }
+                if (fallback) {
+                    fallback.click();
+                    return 'wrong_code_retry_clicked';
+                }
+                return 'wrong_code_waiting';
+            })()
+        ''')
+        if rejection_result == "wrong_code_retry_clicked":
+            debug.log("[GOLIVEASIA VERIFY] Access code rejected; clicked Try Again before next code")
+            attempt["last_submit_at"] = time.time() - 6
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+            return False
+        if rejection_result == "wrong_code_waiting":
+            debug.log("[GOLIVEASIA VERIFY] Access code rejected; Try Again button not found yet")
+            attempt["last_submit_at"] = time.time()
+            await asyncio.sleep(random.uniform(0.8, 1.5))
+            return False
+    except Exception as exc:
+        debug.log(f"[GOLIVEASIA VERIFY] Rejection check error: {str(exc)}")
+
     access_code = codes[code_index]
     access_code_json = json.dumps(access_code)
-    debug.log(f"[GOLIVEASIA VERIFY] Entering access code #{code_index + 1}")
+    debug.log(f"[GOLIVEASIA VERIFY] Entering access code #{code_index + 1}: {access_code}")
 
     try:
         result = await tab.evaluate(f'''
@@ -754,20 +824,6 @@ async def _ttm_enter_access_code(tab, config_dict):
                 var bodyText = document.body.textContent || '';
                 var bodyLower = bodyText.toLowerCase();
                 var buttons = document.querySelectorAll('button, input[type="submit"]');
-
-                if (bodyLower.indexOf('pass-code incorrect') !== -1 ||
-                    bodyLower.indexOf('passcode incorrect') !== -1 ||
-                    bodyLower.indexOf('code incorrect') !== -1 ||
-                    bodyLower.indexOf('incorrect. please re-enter') !== -1) {{
-                    for (var r = 0; r < buttons.length; r++) {{
-                        var retryText = (buttons[r].textContent || buttons[r].value || '').trim().toLowerCase();
-                        if (retryText.indexOf('try again') !== -1 || retryText === 'ok') {{
-                            buttons[r].click();
-                            return 'wrong_code_retry_clicked';
-                        }}
-                    }}
-                    return 'wrong_code_waiting';
-                }}
 
                 var input = document.querySelector(
                     'input[type="text"], input:not([type]), textarea, input[placeholder*="access" i], input[aria-label*="access" i]'
