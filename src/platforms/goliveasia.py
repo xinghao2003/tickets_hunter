@@ -64,7 +64,19 @@ def _is_event_or_sales_url(url):
 
 def _remember_event_url(url):
     if _is_event_or_sales_url(url):
+        _state["event_url"] = url
         _state["pending_event_url"] = url
+
+
+def _get_restart_event_url(config_dict):
+    for url in (
+        _state.get("event_url", ""),
+        _state.get("pending_event_url", ""),
+        config_dict.get("homepage", ""),
+    ):
+        if url and _is_event_or_sales_url(url):
+            return url
+    return ""
 
 
 def _ordered_zones(zones, mode):
@@ -599,6 +611,101 @@ async def _check_human_verification_required(tab, config_dict):
     return False
 
 
+async def _detect_server_error_page(tab):
+    """Detect generic transient server-error pages before URL-specific routing."""
+    try:
+        result = await tab.evaluate('''
+            (function() {
+                if (!document.body) {
+                    return JSON.stringify({ isServerError: false });
+                }
+
+                var bodyText = document.body.textContent || '';
+                var bodyLower = bodyText.toLowerCase();
+                var serverErrors = [
+                    '500 internal server error',
+                    '502 bad gateway',
+                    '503 service unavailable',
+                    '504 gateway timeout',
+                    'bad gateway',
+                    'service unavailable',
+                    'gateway timeout'
+                ];
+
+                for (var i = 0; i < serverErrors.length; i++) {
+                    if (bodyLower.indexOf(serverErrors[i]) !== -1) {
+                        return JSON.stringify({ isServerError: true, error: serverErrors[i] });
+                    }
+                }
+
+                var trimmed = bodyLower.trim();
+                if (/^50[0234]\\b/.test(trimmed)) {
+                    return JSON.stringify({ isServerError: true, error: trimmed.substring(0, 32) });
+                }
+
+                return JSON.stringify({ isServerError: false });
+            })()
+        ''')
+        data = json.loads(result) if result else {}
+        return data if data.get("isServerError") else None
+    except Exception:
+        return None
+
+
+async def _handle_server_error_page(tab, url, config_dict):
+    """Reload transient 5xx pages, then restart from event page after repeated failures."""
+    data = await _detect_server_error_page(tab)
+    if not data:
+        return False
+
+    debug = util.create_debug_logger(config_dict)
+    now = time.time()
+    max_retries = int(config_dict.get("advanced", {}).get("server_error_max_retry", 3) or 3)
+    retry_state = _state.setdefault("server_error_retries", {})
+    attempt = retry_state.setdefault(url, {"count": 0, "last_action_at": 0})
+
+    if now - attempt.get("last_action_at", 0) < 10:
+        return True
+
+    error = data.get("error", "server error")
+    if attempt.get("count", 0) < max_retries:
+        attempt["count"] = attempt.get("count", 0) + 1
+        attempt["last_action_at"] = now
+        debug.log(
+            f"[GOLIVEASIA SERVER] {error}; reloading current page "
+            f"({attempt['count']}/{max_retries})"
+        )
+        await tab.reload()
+        await asyncio.sleep(random.uniform(1.0, 2.0))
+        return True
+
+    restart_url = _get_restart_event_url(config_dict)
+    if restart_url:
+        debug.log(
+            f"[GOLIVEASIA SERVER] {error}; max retries reached, restarting from event page"
+        )
+        _state["buy_now_clicked"] = False
+        _state["ttm_wait_enter_time"] = None
+        _state["queue_it_enter_time"] = None
+        _state["ttm_wait_logged"] = False
+        _state["ttm_wait_join_logged"] = False
+        _state["ttm_wait_queue_id"] = ""
+        _state["ttm_wait_queue_state"] = ""
+        _state["last_zones_url"] = ""
+        _state["current_zone"] = ""
+        _state["access_code_attempts"] = {}
+        _state["server_error_retries"] = {}
+        _state["pending_event_url"] = restart_url
+        await tab.get(restart_url)
+        await asyncio.sleep(random.uniform(1.0, 2.0))
+        return True
+
+    debug.log(f"[GOLIVEASIA SERVER] {error}; max retries reached but event URL is unknown")
+    attempt["last_action_at"] = now
+    await asyncio.sleep(random.uniform(1.0, 2.0))
+    return True
+
+
 async def _ttm_enter_access_code(tab, config_dict):
     """Access-code gate for presale/member/exclusive entry."""
     debug = util.create_debug_logger(config_dict)
@@ -618,10 +725,15 @@ async def _ttm_enter_access_code(tab, config_dict):
     code_index = attempt.get("index", 0)
     if code_index >= len(codes):
         if elapsed < 30:
-            debug.log("[GOLIVEASIA VERIFY] All configured access codes tried; waiting before retry")
+            now = time.time()
+            last_wait_log = attempt.get("last_wait_log_at", 0)
+            if now - last_wait_log > 30:
+                debug.log("[GOLIVEASIA VERIFY] All configured access codes tried; waiting before retry")
+                attempt["last_wait_log_at"] = now
             return False
         code_index = 0
         attempt["index"] = 0
+        attempt["last_wait_log_at"] = 0
 
     access_code = codes[code_index]
     access_code_json = json.dumps(access_code)
@@ -633,6 +745,10 @@ async def _ttm_enter_access_code(tab, config_dict):
                 function fire(el) {{
                     el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                     el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }}
+
+                if (!document.body) {{
+                    return 'document_not_ready';
                 }}
 
                 var bodyText = document.body.textContent || '';
@@ -1437,6 +1553,17 @@ async def _goliveasia_check_queue_status(tab, config_dict, force_show_debug=Fals
                     'estimated wait',
                 ];
 
+                if (!document.body) {
+                    return {
+                        inQueue: false,
+                        foundKeywords: [],
+                        hasOverlay: false,
+                        hasQueueDialog: false,
+                        dialogText: '',
+                        reason: 'document_not_ready'
+                    };
+                }
+
                 const bodyText = document.body.textContent || '';
                 const bodyLower = bodyText.toLowerCase();
                 const hasQueueKeyword = activeQueueKeywords.some(keyword => bodyLower.includes(keyword));
@@ -1499,8 +1626,30 @@ async def _ttm_waiting_room(tab, config_dict):
                         style.opacity !== '0';
                 }
 
+                if (!document.body) {
+                    return JSON.stringify({ action: 'document_not_ready' });
+                }
+
                 var bodyText = document.body.textContent || '';
                 var bodyLower = bodyText.toLowerCase();
+
+                var serverErrors = [
+                    '500 internal server error',
+                    '502 bad gateway',
+                    '503 service unavailable',
+                    '504 gateway timeout',
+                    'bad gateway',
+                    'service unavailable',
+                    'gateway timeout'
+                ];
+                for (var e = 0; e < serverErrors.length; e++) {
+                    if (bodyLower.indexOf(serverErrors[e]) !== -1) {
+                        return JSON.stringify({ action: 'server_error', error: serverErrors[e] });
+                    }
+                }
+                if (/^50[0234]\\b/.test(bodyLower.trim())) {
+                    return JSON.stringify({ action: 'server_error', error: bodyLower.trim().substring(0, 32) });
+                }
 
                 if (
                     bodyLower.indexOf('verify you are human') !== -1 ||
@@ -1555,7 +1704,16 @@ async def _ttm_waiting_room(tab, config_dict):
         data = json.loads(result) if result else {}
         action = data.get("action", "waiting_room")
 
-        if action == "confirmed_still_here":
+        if action == "server_error":
+            now = time.time()
+            last_reload_at = _state.get("ttm_wait_server_error_reload_at", 0)
+            if now - last_reload_at > 10:
+                error = data.get("error", "server error")
+                debug.log(f"[GOLIVEASIA QUEUE] ThaiTicketMajor gatekeeper returned {error}; reloading")
+                _state["ttm_wait_server_error_reload_at"] = now
+                await tab.reload()
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+        elif action == "confirmed_still_here":
             now = time.time()
             last_confirm_logged = _state.get("ttm_wait_last_confirm_logged", 0)
             if now - last_confirm_logged > 30:
@@ -1610,9 +1768,18 @@ async def nodriver_goliveasia_main(tab, url, config_dict):
         })
 
     debug = util.create_debug_logger(config_dict)
-    debug.log(f"[GOLIVEASIA MAIN] URL: {url[:80]}...")
+    now = time.time()
+    last_logged_url = _state.get("last_logged_url", "")
+    last_url_log_at = _state.get("last_url_log_at", 0)
+    if url != last_logged_url or now - last_url_log_at > 30:
+        debug.log(f"[GOLIVEASIA MAIN] URL: {url[:80]}...")
+        _state["last_logged_url"] = url
+        _state["last_url_log_at"] = now
 
     result = False
+
+    if await _handle_server_error_page(tab, url, config_dict):
+        return False
 
     if await _check_human_verification_required(tab, config_dict):
         return False
@@ -1668,6 +1835,7 @@ async def nodriver_goliveasia_main(tab, url, config_dict):
                 result = await _goliveasia_login(tab, config_dict)
 
             elif '/event-detail/' in url or '/event/presale/' in url:
+                _remember_event_url(url)
                 _state["last_activity"] = url
                 result = await _goliveasia_event_detail(tab, config_dict)
 
