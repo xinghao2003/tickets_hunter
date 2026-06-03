@@ -48,6 +48,8 @@ __all__ = [
 
 _TTM_BASE = "golive-asia.thaiticketmajor.com"
 _GOLIVE_LOGIN_URL = "https://www.golive-asia.com/login"
+_TTM_WAIT_BASE = "wait.thaiticketmajor.com"
+_TTM_GATEKEEPER_BASE = "gatekeeper.thaiticketmajor.com"
 
 _state = {}
 
@@ -57,7 +59,7 @@ def _get_current_url(tab):
 
 
 def _is_event_or_sales_url(url):
-    return '/event-detail/' in url or '/sale' in url
+    return '/event-detail/' in url or '/event/presale/' in url or '/sale' in url
 
 
 def _remember_event_url(url):
@@ -313,7 +315,7 @@ async def _check_logged_in(tab):
 # ---------- golive-asia.com (marketing site) ----------
 
 async def _goliveasia_event_detail(tab, config_dict):
-    """Event detail page on golive-asia.com — click BUY NOW to enter booking."""
+    """Event/presale page on golive-asia.com — click BUY NOW to enter booking."""
     debug = util.create_debug_logger(config_dict)
 
     # Guard: don't keep clicking BUY NOW in a loop
@@ -336,7 +338,7 @@ async def _goliveasia_event_detail(tab, config_dict):
         debug.log("[GOLIVEASIA EVENT] Waiting for navigation after BUY NOW...")
         return False
 
-    debug.log("[GOLIVEASIA EVENT] Looking for BUY NOW button")
+    debug.log("[GOLIVEASIA EVENT] Looking for purchase/queue button")
 
     try:
         await asyncio.sleep(random.uniform(0.5, 1.0))
@@ -353,18 +355,18 @@ async def _goliveasia_event_detail(tab, config_dict):
             (function() {
                 var btns = document.querySelectorAll('button');
                 for (var i = 0; i < btns.length; i++) {
-                    var txt = btns[i].textContent || '';
-                    if (txt.indexOf('BUY NOW') !== -1) {
+                    var txt = (btns[i].textContent || '').toUpperCase();
+                    if (txt.indexOf('BUY NOW') !== -1 || txt.indexOf('QUEUE NOW') !== -1) {
                         btns[i].click();
-                        return true;
+                        return txt.trim();
                     }
                 }
-                return false;
+                return '';
             })()
         ''')
 
         if clicked:
-            debug.log("[GOLIVEASIA EVENT] BUY NOW clicked")
+            debug.log(f"[GOLIVEASIA EVENT] Purchase button clicked: {clicked}")
             _state["buy_now_clicked"] = True
             await asyncio.sleep(random.uniform(1.0, 2.0))
 
@@ -393,7 +395,7 @@ async def _goliveasia_event_detail(tab, config_dict):
             if unavailable:
                 debug.log("[GOLIVEASIA EVENT] Ticket UNAVAILABLE (countdown)")
             else:
-                debug.log("[GOLIVEASIA EVENT] BUY NOW button not found")
+                debug.log("[GOLIVEASIA EVENT] Purchase/queue button not found")
 
     except Exception as exc:
         debug.log(f"[GOLIVEASIA EVENT] Error: {str(exc)}")
@@ -1223,28 +1225,35 @@ async def _goliveasia_check_queue_status(tab, config_dict, force_show_debug=Fals
     try:
         result = await tab.evaluate('''
             (function() {
-                const queueKeywords = [
+                const activeQueueKeywords = [
                     'in the queue',
-                    'please wait',
                     'you are in the queue',
                     '\u6392\u968a',
                     '\u8acb\u7a0d\u5019',
                     'please do not leave this page',
-                    'waiting room',
+                    'queue number',
+                    'queue position',
+                    'estimated wait',
                 ];
 
                 const bodyText = document.body.textContent || '';
-                const hasQueueKeyword = queueKeywords.some(keyword => bodyText.toLowerCase().includes(keyword));
+                const bodyLower = bodyText.toLowerCase();
+                const hasQueueKeyword = activeQueueKeywords.some(keyword => bodyLower.includes(keyword));
 
                 const overlayScrim = document.querySelector('[class*="overlay"], .v-overlay__scrim, .modal-backdrop');
                 const hasOverlay = overlayScrim && (overlayScrim.style.opacity === '1' || overlayScrim.style.display !== 'none');
 
                 const dialogText = (document.querySelector('[role="dialog"], .v-dialog, .modal')?.textContent || '').trim();
-                const hasQueueDialog = dialogText && (dialogText.toLowerCase().includes('queue') || dialogText.indexOf('\u6392\u968a') !== -1 || dialogText.indexOf('\u8acb\u7a0d\u5019') !== -1);
+                const dialogLower = dialogText.toLowerCase();
+                const hasQueueDialog = dialogText && (
+                    activeQueueKeywords.some(keyword => dialogLower.includes(keyword)) ||
+                    dialogText.indexOf('\u6392\u968a') !== -1 ||
+                    dialogText.indexOf('\u8acb\u7a0d\u5019') !== -1
+                );
 
                 return {
-                    inQueue: hasQueueKeyword || hasOverlay || hasQueueDialog,
-                    foundKeywords: hasQueueKeyword ? queueKeywords.filter(k => bodyText.toLowerCase().includes(k)) : [],
+                    inQueue: hasQueueKeyword || (hasOverlay && hasQueueDialog),
+                    foundKeywords: hasQueueKeyword ? activeQueueKeywords.filter(k => bodyLower.includes(k)) : [],
                     hasOverlay: !!hasOverlay,
                     hasQueueDialog: !!hasQueueDialog,
                     dialogText: hasQueueDialog ? dialogText : ''
@@ -1272,6 +1281,77 @@ async def _goliveasia_check_queue_status(tab, config_dict, force_show_debug=Fals
         return False
 
 
+async def _ttm_waiting_room(tab, config_dict):
+    """Handle ThaiTicketMajor waiting-room pages before the booking engine opens."""
+    debug = util.create_debug_logger(config_dict)
+
+    try:
+        result = await tab.evaluate('''
+            (function() {
+                function isVisible(el) {
+                    if (!el) return false;
+                    var rect = el.getBoundingClientRect();
+                    var style = window.getComputedStyle(el);
+                    return rect.width > 0 && rect.height > 0 &&
+                        style.display !== 'none' &&
+                        style.visibility !== 'hidden' &&
+                        style.opacity !== '0';
+                }
+
+                var bodyText = document.body.textContent || '';
+                var buttons = document.querySelectorAll('button');
+                for (var i = 0; i < buttons.length; i++) {
+                    var buttonText = (buttons[i].textContent || '').trim().toLowerCase();
+                    if (isVisible(buttons[i]) && buttonText.indexOf('join waiting room') !== -1) {
+                        buttons[i].click();
+                        return JSON.stringify({ action: 'joined_waiting_room' });
+                    }
+                }
+
+                var queueIdMatch = bodyText.match(/Queue ID:\\s*([a-f0-9-]+)/i);
+                if (queueIdMatch) {
+                    return JSON.stringify({
+                        action: 'waiting_with_queue_id',
+                        queueId: queueIdMatch[1]
+                    });
+                }
+
+                if (bodyText.toLowerCase().indexOf('you are now in the entry zone') !== -1) {
+                    return JSON.stringify({ action: 'entry_zone_waiting' });
+                }
+
+                return JSON.stringify({ action: 'waiting_room' });
+            })()
+        ''')
+
+        data = json.loads(result) if result else {}
+        action = data.get("action", "waiting_room")
+
+        if action == "joined_waiting_room":
+            if not _state.get("ttm_wait_join_logged", False):
+                debug.log("[GOLIVEASIA QUEUE] Joined ThaiTicketMajor waiting room")
+                _state["ttm_wait_join_logged"] = True
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+        elif action == "waiting_with_queue_id":
+            queue_id = data.get("queueId", "")
+            last_queue_id = _state.get("ttm_wait_queue_id", "")
+            if queue_id and queue_id != last_queue_id:
+                debug.log(f"[GOLIVEASIA QUEUE] Waiting in ThaiTicketMajor room; Queue ID: {queue_id}")
+                _state["ttm_wait_queue_id"] = queue_id
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+        else:
+            if not _state.get("ttm_wait_logged", False):
+                debug.log(f"[GOLIVEASIA QUEUE] ThaiTicketMajor waiting room: {action}")
+                _state["ttm_wait_logged"] = True
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+
+        return False
+
+    except Exception as exc:
+        debug.log(f"[GOLIVEASIA QUEUE] ThaiTicketMajor waiting room error: {str(exc)}")
+        return False
+
+
 # ---------- Main router ----------
 
 async def nodriver_goliveasia_main(tab, url, config_dict):
@@ -1296,6 +1376,16 @@ async def nodriver_goliveasia_main(tab, url, config_dict):
     # ----- Queue handling -----
     try:
         url_lower = url.lower()
+        if _TTM_WAIT_BASE in url_lower or _TTM_GATEKEEPER_BASE in url_lower:
+            if _state.get("ttm_wait_enter_time") is None:
+                _state["ttm_wait_enter_time"] = time.time()
+            return await _ttm_waiting_room(tab, config_dict)
+        else:
+            if _state.get("ttm_wait_enter_time") is not None:
+                elapsed = time.time() - _state["ttm_wait_enter_time"]
+                debug.log(f"[GOLIVEASIA] ThaiTicketMajor waiting room passed (waited {elapsed:.1f}s)")
+                _state["ttm_wait_enter_time"] = None
+
         # Queue-IT URL-based waiting room
         if 'queue-it.net' in url_lower:
             if _state.get("queue_it_enter_time") is None:
@@ -1333,7 +1423,7 @@ async def nodriver_goliveasia_main(tab, url, config_dict):
                 _state["buy_now_clicked"] = False
                 result = await _goliveasia_login(tab, config_dict)
 
-            elif '/event-detail/' in url:
+            elif '/event-detail/' in url or '/event/presale/' in url:
                 _state["last_activity"] = url
                 result = await _goliveasia_event_detail(tab, config_dict)
 

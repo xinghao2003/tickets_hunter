@@ -74,7 +74,7 @@ async def nodriver_goto_homepage(driver, config_dict):
     debug = util.create_debug_logger(config_dict)
     tab = None
     homepage = config_dict["homepage"]
-    if 'golive-asia.com' in homepage and ('/event-detail/' in homepage or '/sale' in homepage):
+    if 'golive-asia.com' in homepage and ('/event-detail/' in homepage or '/event/presale/' in homepage or '/sale' in homepage):
         parsed_homepage = urllib.parse.urlparse(homepage)
         redirect_path = parsed_homepage.path
         if parsed_homepage.query:
@@ -889,8 +889,13 @@ async def main(args):
         if FANSIGO_COGNITO_DOMAIN in url:
             await nodriver_fansigo_signin(tab, url, config_dict)
 
-        # Go Live Asia (marketing site + thaiticketmajor booking engine)
-        if 'golive-asia.com' in url or 'golive-asia.thaiticketmajor.com' in url:
+        # Go Live Asia (marketing site + thaiticketmajor booking/waiting engines)
+        if (
+            'golive-asia.com' in url
+            or 'golive-asia.thaiticketmajor.com' in url
+            or 'wait.thaiticketmajor.com' in url
+            or 'gatekeeper.thaiticketmajor.com' in url
+        ):
             await nodriver_goliveasia_main(tab, url, config_dict)
 
         # for facebook
