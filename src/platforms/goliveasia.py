@@ -58,6 +58,27 @@ def _get_current_url(tab):
     return tab.url if hasattr(tab, 'url') else str(tab.target.url)
 
 
+def _is_ttm_url(url):
+    url_lower = (url or "").lower()
+    return (
+        _TTM_BASE in url_lower or
+        _TTM_WAIT_BASE in url_lower or
+        _TTM_GATEKEEPER_BASE in url_lower
+    )
+
+
+def _is_ttm_booking_url(url):
+    url_lower = (url or "").lower()
+    return _TTM_BASE in url_lower and any(page in url_lower for page in (
+        'verify.php',
+        'verify_condition',
+        'zones.php',
+        'fixed.php',
+        'festival.php',
+        'enroll.php',
+    ))
+
+
 def _is_event_or_sales_url(url):
     return '/event-detail/' in url or '/event/presale/' in url or '/sale' in url
 
@@ -77,6 +98,151 @@ def _get_restart_event_url(config_dict):
         if url and _is_event_or_sales_url(url):
             return url
     return ""
+
+
+def _get_goliveasia_retry_config(config_dict):
+    advanced = config_dict.get("advanced", {})
+    auto_reload_interval = advanced.get("auto_reload_page_interval", 5) or 5
+    try:
+        auto_reload_interval = float(auto_reload_interval)
+    except (TypeError, ValueError):
+        auto_reload_interval = 5
+
+    def get_int(name, default, minimum=1):
+        try:
+            value = int(advanced.get(name, default) or default)
+        except (TypeError, ValueError):
+            value = default
+        return max(minimum, value)
+
+    def get_float(name, default, minimum=0.0):
+        try:
+            value = float(advanced.get(name, default) or default)
+        except (TypeError, ValueError):
+            value = default
+        return max(minimum, value)
+
+    return {
+        "access_code_max_cycles": get_int("goliveasia_access_code_max_cycles", 1),
+        "zone_round_cooldown": get_float(
+            "goliveasia_zone_round_cooldown",
+            max(auto_reload_interval, 10),
+            minimum=1.0,
+        ),
+        "server_error_max_retry": get_int("server_error_max_retry", 3),
+        "server_error_max_restarts": get_int("goliveasia_server_error_max_restarts", 2),
+        "server_error_backoff_initial": get_float("goliveasia_server_error_backoff_initial", 60, minimum=1.0),
+        "server_error_backoff_max": get_float("goliveasia_server_error_backoff_max", 300, minimum=1.0),
+    }
+
+
+def _access_code_signature(config_dict):
+    return "\n".join(_get_access_codes(config_dict))
+
+
+def _clear_access_code_pause_if_stale(url, config_dict):
+    pause = _state.get("access_code_pause")
+    if not pause:
+        return
+
+    if pause.get("url") != url or pause.get("code_signature") != _access_code_signature(config_dict):
+        _state.pop("access_code_pause", None)
+        attempts = _state.get("access_code_attempts", {})
+        attempts.pop(url, None)
+        attempts.pop(pause.get("url"), None)
+
+
+def _notify_goliveasia_attention_once(config_dict, key, message, debug):
+    notified = _state.setdefault("attention_notifications", set())
+    if key in notified:
+        return
+    notified.add(key)
+
+    print(message)
+    debug.log(message)
+
+    try:
+        play_sound_while_ordering(config_dict)
+    except Exception as exc:
+        debug.log(f"[GOLIVEASIA ATTENTION] Sound notification failed: {str(exc)}")
+
+    advanced = config_dict.get("advanced", {})
+    verbose = advanced.get("verbose", False)
+    webhook_url = advanced.get("discord_webhook_url", "")
+    if webhook_url:
+        util.send_discord_webhook_async(
+            webhook_url,
+            "ticket",
+            "goliveasia",
+            verbose=verbose,
+            custom_message=message,
+        )
+
+    bot_token = advanced.get("telegram_bot_token", "")
+    chat_id = advanced.get("telegram_chat_id", "")
+    if bot_token and chat_id:
+        util.send_telegram_message_async(
+            bot_token,
+            chat_id,
+            "ticket",
+            "goliveasia",
+            verbose=verbose,
+            custom_message=message,
+        )
+
+
+async def _handle_goliveasia_pauses(tab, url, config_dict, debug):
+    now = time.time()
+
+    if 'verify.php' in (url or '').lower():
+        _clear_access_code_pause_if_stale(url, config_dict)
+        pause = _state.get("access_code_pause")
+        if pause and pause.get("url") == url:
+            last_log_at = pause.get("last_log_at", 0)
+            if now - last_log_at > 30:
+                debug.log("[GOLIVEASIA VERIFY] Access-code attempts exhausted; paused for manual action")
+                pause["last_log_at"] = now
+            await asyncio.sleep(random.uniform(0.8, 1.2))
+            return True
+    else:
+        pause = _state.pop("access_code_pause", None)
+        if pause:
+            _state.get("access_code_attempts", {}).pop(pause.get("url"), None)
+
+    zone_cooldown_until = _state.get("zone_retry_after", 0)
+    if 'zones.php' in (url or '').lower() and zone_cooldown_until > now:
+        last_log_at = _state.get("zone_cooldown_last_log_at", 0)
+        if now - last_log_at > 30:
+            remaining = zone_cooldown_until - now
+            debug.log(f"[GOLIVEASIA ZONE] Round cooldown active, retrying in {remaining:.1f}s")
+            _state["zone_cooldown_last_log_at"] = now
+        await asyncio.sleep(random.uniform(0.8, 1.2))
+        return True
+
+    if zone_cooldown_until and zone_cooldown_until <= now:
+        _state["fail_list"] = []
+        _state["zone_retry_after"] = 0
+        _state["zone_cooldown_last_log_at"] = 0
+        debug.log("[GOLIVEASIA ZONE] Round cooldown finished; retrying matching zones")
+    elif 'zones.php' not in (url or '').lower():
+        _state["zone_cooldown_last_log_at"] = 0
+
+    server_backoff_until = _state.get("server_error_backoff_until", 0)
+    if _is_ttm_url(url) and server_backoff_until > now:
+        last_log_at = _state.get("server_error_backoff_last_log_at", 0)
+        if now - last_log_at > 30:
+            remaining = server_backoff_until - now
+            debug.log(f"[GOLIVEASIA SERVER] Backoff active, retrying in {remaining:.1f}s")
+            _state["server_error_backoff_last_log_at"] = now
+        await asyncio.sleep(random.uniform(0.8, 1.2))
+        return True
+
+    if server_backoff_until and server_backoff_until <= now:
+        _state["server_error_backoff_until"] = 0
+        _state["server_error_backoff_last_log_at"] = 0
+        debug.log("[GOLIVEASIA SERVER] Backoff finished; checking page again")
+
+    return False
 
 
 def _ordered_zones(zones, mode):
@@ -656,11 +822,17 @@ async def _handle_server_error_page(tab, url, config_dict):
     """Reload transient 5xx pages, then restart from event page after repeated failures."""
     data = await _detect_server_error_page(tab)
     if not data:
+        _state.pop("server_error_retries", None)
+        _state.pop("server_error_restart_counts", None)
+        _state.pop("server_error_backoff_seconds", None)
+        _state.pop("server_error_backoff_until", None)
+        _state.pop("server_error_backoff_last_log_at", None)
         return False
 
     debug = util.create_debug_logger(config_dict)
     now = time.time()
-    max_retries = int(config_dict.get("advanced", {}).get("server_error_max_retry", 3) or 3)
+    retry_config = _get_goliveasia_retry_config(config_dict)
+    max_retries = retry_config["server_error_max_retry"]
     retry_state = _state.setdefault("server_error_retries", {})
     attempt = retry_state.setdefault(url, {"count": 0, "last_action_at": 0})
 
@@ -681,9 +853,32 @@ async def _handle_server_error_page(tab, url, config_dict):
 
     restart_url = _get_restart_event_url(config_dict)
     if restart_url:
+        restart_counts = _state.setdefault("server_error_restart_counts", {})
+        restart_count = restart_counts.get(restart_url, 0)
+        max_restarts = retry_config["server_error_max_restarts"]
+        if restart_count >= max_restarts:
+            current_backoff = _state.get("server_error_backoff_seconds", 0)
+            if current_backoff <= 0:
+                current_backoff = retry_config["server_error_backoff_initial"]
+            backoff_seconds = min(current_backoff, retry_config["server_error_backoff_max"])
+            _state["server_error_backoff_seconds"] = min(
+                backoff_seconds * 2,
+                retry_config["server_error_backoff_max"],
+            )
+            _state["server_error_backoff_until"] = now + backoff_seconds
+            _state["server_error_backoff_last_log_at"] = 0
+            attempt["last_action_at"] = now
+            message = (
+                "[GoLive Asia] Server error retry limit reached. "
+                f"Backing off for {backoff_seconds:.0f}s before trying again."
+            )
+            _notify_goliveasia_attention_once(config_dict, "server_error_backoff", message, debug)
+            return True
+
         debug.log(
             f"[GOLIVEASIA SERVER] {error}; max retries reached, restarting from event page"
         )
+        restart_counts[restart_url] = restart_count + 1
         _state["buy_now_clicked"] = False
         _state["ttm_wait_enter_time"] = None
         _state["queue_it_enter_time"] = None
@@ -716,14 +911,36 @@ async def _ttm_enter_access_code(tab, config_dict):
         return False
 
     current_url = _get_current_url(tab)
+    _clear_access_code_pause_if_stale(current_url, config_dict)
+    if _state.get("access_code_pause"):
+        return False
+
+    retry_config = _get_goliveasia_retry_config(config_dict)
     attempts = _state.setdefault("access_code_attempts", {})
-    attempt = attempts.setdefault(current_url, {"index": 0, "last_submit_at": 0})
+    attempt = attempts.setdefault(current_url, {"index": 0, "cycle": 0, "cycle_waiting": False, "last_submit_at": 0})
     elapsed = time.time() - attempt.get("last_submit_at", 0)
     if elapsed < 8:
         return False
 
     code_index = attempt.get("index", 0)
     if code_index >= len(codes):
+        if not attempt.get("cycle_waiting", False):
+            attempt["cycle"] = attempt.get("cycle", 0) + 1
+            attempt["cycle_waiting"] = True
+        max_cycles = retry_config["access_code_max_cycles"]
+        if attempt["cycle"] >= max_cycles:
+            _state["access_code_pause"] = {
+                "url": current_url,
+                "code_signature": _access_code_signature(config_dict),
+                "last_log_at": 0,
+            }
+            message = (
+                "[GoLive Asia] All configured access codes were rejected. "
+                "Paused for manual action."
+            )
+            _notify_goliveasia_attention_once(config_dict, f"access_code_exhausted:{current_url}", message, debug)
+            return False
+
         if elapsed < 30:
             now = time.time()
             last_wait_log = attempt.get("last_wait_log_at", 0)
@@ -733,6 +950,7 @@ async def _ttm_enter_access_code(tab, config_dict):
             return False
         code_index = 0
         attempt["index"] = 0
+        attempt["cycle_waiting"] = False
         attempt["last_wait_log_at"] = 0
 
     try:
@@ -1235,7 +1453,14 @@ async def _ttm_select_zone(tab, config_dict):
             debug.log(f"[GOLIVEASIA ZONE] Skipping failed zones: {fail_list}")
 
         if len(matched) == 0:
-            debug.log("[GOLIVEASIA ZONE] No untried matching zones")
+            retry_config = _get_goliveasia_retry_config(config_dict)
+            cooldown = retry_config["zone_round_cooldown"]
+            _state["zone_retry_after"] = time.time() + cooldown
+            _state["zone_cooldown_last_log_at"] = 0
+            debug.log(
+                f"[GOLIVEASIA ZONE] No untried matching zones; "
+                f"cooling down {cooldown:.1f}s before retrying the round"
+            )
             return False
 
         # Pick target zone based on mode
@@ -1834,10 +2059,14 @@ async def nodriver_goliveasia_main(tab, url, config_dict):
 
     result = False
 
-    if await _handle_server_error_page(tab, url, config_dict):
+    if await _handle_goliveasia_pauses(tab, url, config_dict, debug):
         return False
 
-    if await _check_human_verification_required(tab, config_dict):
+    should_scan_ttm_page = _is_ttm_url(url)
+    if should_scan_ttm_page and await _handle_server_error_page(tab, url, config_dict):
+        return False
+
+    if should_scan_ttm_page and await _check_human_verification_required(tab, config_dict):
         return False
 
     # ----- Queue handling -----
@@ -1867,9 +2096,19 @@ async def nodriver_goliveasia_main(tab, url, config_dict):
 
         # In-page / overlay-based queue detection (similar to TicketPlus)
         try:
-            is_overlay_queue = await _goliveasia_check_queue_status(tab, config_dict)
-            if is_overlay_queue:
-                return False
+            url_lower = url.lower()
+            should_scan_overlay_queue = (
+                _is_ttm_booking_url(url) and
+                'enroll.php' not in url_lower and
+                'payment' not in url_lower and
+                'checkout' not in url_lower
+            ) or _state.get("goliveasia_overlay_queue_seen", False)
+            if should_scan_overlay_queue:
+                is_overlay_queue = await _goliveasia_check_queue_status(tab, config_dict)
+                if is_overlay_queue:
+                    _state["goliveasia_overlay_queue_seen"] = True
+                    return False
+                _state["goliveasia_overlay_queue_seen"] = False
         except Exception:
             # Non-fatal — continue routing if detection fails
             pass

@@ -616,7 +616,10 @@ async def reload_config(config_dict, last_mtime):
                         "auto_reload_overheat_count", "auto_reload_overheat_cd",
                         "idle_keyword", "resume_keyword", "idle_keyword_second", "resume_keyword_second",
                         "discord_webhook_url", "telegram_bot_token", "telegram_chat_id",
-                        "discount_code"
+                        "discount_code",
+                        "goliveasia_access_code_max_cycles", "goliveasia_zone_round_cooldown",
+                        "server_error_max_retry", "goliveasia_server_error_max_restarts",
+                        "goliveasia_server_error_backoff_initial", "goliveasia_server_error_backoff_max"
                     ]
                     for field in adv_fields:
                         if field in new_config["advanced"]:
