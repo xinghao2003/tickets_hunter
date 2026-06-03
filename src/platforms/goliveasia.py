@@ -572,6 +572,33 @@ async def _notify_human_verification_required(tab, config_dict, debug):
     await _focus_tab_for_manual_action(tab, debug)
 
 
+async def _check_human_verification_required(tab, config_dict):
+    """Detect human-verification challenges on any GoLive-related page."""
+    debug = util.create_debug_logger(config_dict)
+
+    try:
+        result = await tab.evaluate('''
+            (function() {
+                var bodyText = document.body ? (document.body.textContent || '') : '';
+                var bodyLower = bodyText.toLowerCase();
+                return (
+                    bodyLower.indexOf('verify you are human') !== -1 ||
+                    bodyLower.indexOf('complete the challenge below') !== -1 ||
+                    bodyLower.indexOf('drag the slider to set the time') !== -1
+                );
+            })()
+        ''')
+
+        if result:
+            await _notify_human_verification_required(tab, config_dict, debug)
+            return True
+
+    except Exception as exc:
+        debug.log(f"[GOLIVEASIA QUEUE] Human verification detection error: {str(exc)}")
+
+    return False
+
+
 async def _ttm_enter_access_code(tab, config_dict):
     """Access-code gate for presale/member/exclusive entry."""
     debug = util.create_debug_logger(config_dict)
@@ -1586,6 +1613,9 @@ async def nodriver_goliveasia_main(tab, url, config_dict):
     debug.log(f"[GOLIVEASIA MAIN] URL: {url[:80]}...")
 
     result = False
+
+    if await _check_human_verification_required(tab, config_dict):
+        return False
 
     # ----- Queue handling -----
     try:
