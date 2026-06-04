@@ -1378,7 +1378,10 @@ def is_row_match_keyword(keyword_string, row_text):
 
 def reset_row_text_if_match_keyword_exclude(config_dict, row_text):
     area_keyword_exclude = config_dict["keyword_exclude"]
-    return is_row_match_keyword(area_keyword_exclude, row_text)
+    if len(area_keyword_exclude) > 0:
+        return is_row_match_keyword(area_keyword_exclude, row_text)
+    else:
+        return False
 
 
 def yii_captcha_hash(code):

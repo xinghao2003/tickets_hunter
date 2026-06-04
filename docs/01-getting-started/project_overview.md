@@ -1,7 +1,7 @@
 # 專案架構概覽
 
 **文件說明**：介紹 Tickets Hunter 專案的整體架構、核心程式模組與檔案組織結構
-**最後更新**：2026-03-09
+**最後更新**：2026-06-02
 
 ---
 
@@ -140,19 +140,42 @@ debug.log("[TAG] message")
 ```
 tickets_hunter/
 ├── src/                          # 原始碼目錄
-│   ├── nodriver_tixcraft.py      # NoDriver 主程式 ⭐
-│   ├── settings.py               # 網頁設定介面
-│   ├── settings.json             # 主設定檔
+│   ├── nodriver_tixcraft.py      # 主程式（路由 + 主迴圈）⭐
+│   ├── nodriver_common.py        # 共用瀏覽器基礎設施
+│   ├── settings.py               # 設定 CRUD + Web Server
 │   ├── util.py                   # 共用工具函數
-│   └── webdriver/                # 瀏覽器擴充套件
-├── www/                          # 網頁介面
-│   └── settings.html             # 設定頁面
-├── docs/                         # 文件目錄
+│   ├── platforms/                # 各平台邏輯模組
+│   │   ├── tixcraft.py           # TixCraft / Teamear / Indievox
+│   │   ├── kktix.py              # KKTIX
+│   │   ├── ticketplus.py         # TicketPlus
+│   │   ├── ibon.py               # iBon
+│   │   ├── kham.py               # KHAM / 年代 / UDN
+│   │   ├── famiticket.py         # FamiTicket
+│   │   ├── funone.py             # FunOne
+│   │   ├── cityline.py           # Cityline
+│   │   ├── hkticketing.py        # HK Ticketing
+│   │   └── fansigo.py            # FANSI GO
+│   ├── assets/                   # 靜態資源
+│   │   ├── model/                # OCR 模型（通用 + 平台專用）
+│   │   └── sounds/               # 通知音效
+│   └── www/                      # 網頁設定介面
+│       ├── settings.html
+│       └── settings.js
+├── tests/                        # 測試目錄
+│   ├── unit/                     # util.py 純函式單元測試
+│   ├── integration/              # 整合測試（含平台選擇器）
+│   ├── platform_logic/           # 平台邏輯測試
+│   └── stages/                   # 12 階段測試
+├── tools/                        # 開發工具
+│   └── captcha_trainer/          # OCR 驗證碼訓練工具
+├── build_scripts/                # 打包設定
+│   └── nodriver_tixcraft.spec    # PyInstaller 設定
+├── guide/                        # 使用者操作指南
+├── docs/                         # 開發文件
 │   ├── 01-getting-started/       # 入門指南
 │   ├── 02-development/           # 開發指南
 │   ├── 03-mechanisms/            # 機制說明
 │   ├── 04-implementation/        # 實作參考
-│   ├── 05-validation/            # 驗證標準
 │   ├── 06-api-reference/         # API 參考
 │   └── 07-deployment/            # 部署指南
 ├── CHANGELOG.md                  # 更新日誌
@@ -230,7 +253,7 @@ development_guide.md  ← 開發規範指南（檢查清單 + 拆分原則）
 
 ---
 
-**更新日期**: 2026-03-09
+**更新日期**: 2026-06-02
 **相關文件**:
 - [設定指南](./setup.md) - 安裝與環境設定
 - [標準功能定義](../02-development/ticket_automation_standard.md) - 12 階段標準

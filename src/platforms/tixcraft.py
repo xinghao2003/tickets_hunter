@@ -76,6 +76,106 @@ __all__ = [
 _state = {}
 
 
+# Keywords that identify serial-number / membership-code style verify prompts.
+# Used as a guard for the discount_code fallback in nodriver_tixcraft_input_check_code
+# to avoid wasting an attempt on unrelated questions (math, common knowledge, etc.).
+# Match is case-insensitive substring on question_text; covers zh-TW/zh-CN/en/ja/ko.
+_SERIAL_CODE_QUESTION_KEYWORDS = (
+    "會員",        # zh-TW: member (會員)
+    "会员",        # zh-CN: member (会员)
+    "序號",        # zh-TW: serial (序號)
+    "序号",        # zh-CN: serial (序号)
+    "編號",        # zh-TW: ID/number (編號)
+    "编号",        # zh-CN: ID/number (编号)
+    "員編",        # zh-TW: member ID (員編)
+    "会員番号",  # ja: member number (会員番号)
+    "シリアル",  # ja: serial (シリアル)
+    "회원",        # ko: member (회원)
+    "멤버십",  # ko: membership (멤버십)
+    "membership",
+    "member id",
+    "member no",
+    "serial",
+    "weverse",
+)
+
+_TIXCRAFT_SOFT_BLOCK_SCOPE_HOSTS = (
+    "tixcraft.com",
+    "teamear.com",
+    "indievox.com",
+)
+
+
+def _is_serial_code_question(question_text):
+    if not question_text:
+        return False
+    text_lower = question_text.lower()
+    for kw in _SERIAL_CODE_QUESTION_KEYWORDS:
+        if kw.lower() in text_lower:
+            return True
+    return False
+
+
+def _is_tixcraft_soft_block_scope(url):
+    url_lower = (url or "").lower()
+    return any(host in url_lower for host in _TIXCRAFT_SOFT_BLOCK_SCOPE_HOSTS)
+
+
+def _parse_tixcraft_soft_block_delay(config_dict):
+    advanced = (config_dict or {}).get("advanced", {})
+    raw_value = advanced.get("tixcraft_soft_block_delay", "")
+
+    if raw_value is None:
+        return None
+
+    text = str(raw_value).strip()
+    if not text:
+        return None
+
+    try:
+        delay_seconds = int(text)
+    except (TypeError, ValueError):
+        return None
+
+    if delay_seconds <= 0:
+        return None
+
+    return min(delay_seconds, 600)
+
+
+def _resolve_soft_block_wait_seconds(config_dict, scope_url, default_wait_seconds=None):
+    custom_delay = _parse_tixcraft_soft_block_delay(config_dict)
+    if custom_delay is not None and _is_tixcraft_soft_block_scope(scope_url):
+        return custom_delay, True
+
+    if default_wait_seconds is None:
+        default_wait_seconds = random.randint(240, 420)
+
+    return default_wait_seconds, False
+
+
+def _process_queue_it_state(url, state, current_time):
+    """Update queue-it tracking state and decide whether the main loop should pause.
+
+    Returns:
+        (should_pause: bool, elapsed_seconds: float | None)
+        - should_pause=True means the caller must short-circuit the main loop
+          (we're still inside *.queue-it.net).
+        - elapsed_seconds is set to the wait duration when this call detects
+          the queue has been passed; otherwise None.
+    """
+    url_lower = (url or "").lower()
+    if 'queue-it.net' in url_lower:
+        if state.get("queue_it_enter_time") is None:
+            state["queue_it_enter_time"] = current_time
+        return True, None
+    if state.get("queue_it_enter_time") is not None:
+        elapsed = current_time - state["queue_it_enter_time"]
+        state["queue_it_enter_time"] = None
+        return False, elapsed
+    return False, None
+
+
 async def nodriver_tixcraft_home_close_window(tab):
     if _state.get('cookie_accepted'):
         return
@@ -1378,10 +1478,12 @@ async def nodriver_tixcraft_input_check_code(tab, config_dict, fail_list, questi
         # and auto_guess_options yielded no result. Covers serial-number style prompts
         # (e.g. Weverse Presale MY MEMBERSHIP) where users naturally fill the discount
         # code field rather than the answer dictionary.
+        # Guard: only trigger for member/serial-number style prompts so the
+        # discount_code is not wasted on unrelated questions (math, trivia, etc.).
         if len(answer_list)==0:
             discount_code_fallback = (config_dict["advanced"].get("discount_code") or "").strip()
-            if discount_code_fallback:
-                debug.log("[VERIFY] Using discount_code as final fallback answer")
+            if discount_code_fallback and _is_serial_code_question(question_text):
+                debug.log("[VERIFY] Using discount_code as serial-code fallback answer")
                 answer_list = [discount_code_fallback]
 
         inferred_answer_string = ""
@@ -1743,6 +1845,25 @@ async def nodriver_tixcraft_area_auto_select(tab, url, config_dict):
     if not el:
         return
 
+    # Batch pre-fetch: one JS call to get all area text and font data
+    area_list_cache = None
+    area_text_cache = None
+    try:
+        area_list_cache = await el.query_selector_all('a')
+        area_text_cache = await tab.evaluate("""
+            Array.from(document.querySelectorAll('.zone a')).map(a => ({
+                text: a.innerText.trim(),
+                fontText: a.querySelector('font')?.textContent?.trim() ?? ''
+            }))
+        """)
+        if area_list_cache and area_text_cache and len(area_list_cache) != len(area_text_cache):
+            area_text_cache = None
+        if area_text_cache:
+            debug.log(f"[AREA KEYWORD] Batch pre-fetch: {len(area_text_cache)} areas cached")
+    except:
+        area_list_cache = None
+        area_text_cache = None
+
     is_need_refresh = False
     matched_blocks = None
 
@@ -1751,6 +1872,7 @@ async def nodriver_tixcraft_area_auto_select(tab, url, config_dict):
         # Format: "\"keyword1\",\"keyword2\"" → ['keyword1', 'keyword2']
         # Supports OR logic - iterates through keywords until match found
         area_keyword_array = util.parse_keyword_string_to_array(area_keyword)
+        area_keyword_array = list(dict.fromkeys(area_keyword_array))
 
         # T012: Start checking keywords log
         debug.log(f"[AREA KEYWORD] Start checking keywords in order: {area_keyword_array}")
@@ -1761,7 +1883,9 @@ async def nodriver_tixcraft_area_auto_select(tab, url, config_dict):
         for keyword_index, area_keyword_item in enumerate(area_keyword_array):
             debug.log(f"[AREA KEYWORD] Checking keyword #{keyword_index + 1}: {area_keyword_item}")
 
-            is_need_refresh, matched_blocks = await nodriver_get_tixcraft_target_area(el, config_dict, area_keyword_item)
+            is_need_refresh, matched_blocks = await nodriver_get_tixcraft_target_area(
+                el, config_dict, area_keyword_item,
+                area_list_cache=area_list_cache, area_text_cache=area_text_cache)
 
             if not is_need_refresh:
                 # T013: Keyword matched log
@@ -1780,7 +1904,9 @@ async def nodriver_tixcraft_area_auto_select(tab, url, config_dict):
                 # T022: Fallback enabled - use auto_select_mode without keyword
                 debug.log(f"[AREA FALLBACK] area_auto_fallback=true, triggering auto fallback")
                 debug.log(f"[AREA FALLBACK] Selecting available area based on area_select_order='{auto_select_mode}'")
-                is_need_refresh, matched_blocks = await nodriver_get_tixcraft_target_area(el, config_dict, "")
+                is_need_refresh, matched_blocks = await nodriver_get_tixcraft_target_area(
+                    el, config_dict, "",
+                    area_list_cache=area_list_cache, area_text_cache=area_text_cache)
                 is_fallback_selection = True  # Mark as fallback selection
             else:
                 # T023: Fallback disabled - strict mode (no selection, but still reload)
@@ -1790,7 +1916,9 @@ async def nodriver_tixcraft_area_auto_select(tab, url, config_dict):
                 # matched_blocks remains None (no selection will be made)
                 # is_need_refresh remains True (will trigger reload)
     else:
-        is_need_refresh, matched_blocks = await nodriver_get_tixcraft_target_area(el, config_dict, "")
+        is_need_refresh, matched_blocks = await nodriver_get_tixcraft_target_area(
+            el, config_dict, "",
+            area_list_cache=area_list_cache, area_text_cache=area_text_cache)
         # No keyword specified, treat as mode-based selection (similar to fallback)
         if not area_keyword:
             is_fallback_selection = True
@@ -1838,7 +1966,8 @@ async def nodriver_tixcraft_area_auto_select(tab, url, config_dict):
         except Exception:
             pass
 
-async def nodriver_get_tixcraft_target_area(el, config_dict, area_keyword_item):
+async def nodriver_get_tixcraft_target_area(el, config_dict, area_keyword_item,
+                                            area_list_cache=None, area_text_cache=None):
     area_auto_select_mode = config_dict["area_auto_select"]["mode"]
     debug = util.create_debug_logger(config_dict)
     is_need_refresh = False
@@ -1861,11 +1990,14 @@ async def nodriver_get_tixcraft_target_area(el, config_dict, area_keyword_item):
         debug.log(f"[AREA KEYWORD] Element is None, cannot select area")
         return True, None
 
-    try:
-        area_list = await el.query_selector_all('a')
-    except:
-        debug.log(f"[AREA KEYWORD] Failed to query area list")
-        return True, None
+    if area_list_cache is not None:
+        area_list = area_list_cache
+    else:
+        try:
+            area_list = await el.query_selector_all('a')
+        except:
+            debug.log(f"[AREA KEYWORD] Failed to query area list")
+            return True, None
 
     if not area_list or len(area_list) == 0:
         debug.log(f"[AREA KEYWORD] No areas found")
@@ -1879,12 +2011,15 @@ async def nodriver_get_tixcraft_target_area(el, config_dict, area_keyword_item):
     for row in area_list:
         area_index += 1
 
-        try:
-            row_html = await row.get_html()
-            row_text = util.remove_html_tags(row_html)
-        except:
-            debug.log(f"[AREA KEYWORD] [{area_index}] Failed to get row content")
-            break
+        if area_text_cache is not None:
+            row_text = area_text_cache[area_index - 1].get('text', '')
+        else:
+            try:
+                row_html = await row.get_html()
+                row_text = util.remove_html_tags(row_html)
+            except:
+                debug.log(f"[AREA KEYWORD] [{area_index}] Failed to get row content")
+                break
 
         if not row_text or util.reset_row_text_if_match_keyword_exclude(config_dict, row_text):
             debug.log(f"[AREA KEYWORD] [{area_index}] Excluded by keyword_exclude")
@@ -1925,23 +2060,28 @@ async def nodriver_get_tixcraft_target_area(el, config_dict, area_keyword_item):
             debug.log(f"[AREA KEYWORD]   No keyword filter, accepting this area")
 
         # Check seat availability for multiple tickets
-        if config_dict["ticket_number"] > 1:
+        allow_less_tickets = config_dict.get("tixcraft", {}).get("allow_less_tickets", False)
+        if config_dict["ticket_number"] > 1 and not allow_less_tickets:
             try:
-                font_el = await row.query_selector('font')
-                if font_el:
-                    font_text = await font_el.evaluate('el => el.textContent')
-                    if font_text:
-                        font_text = "@%s@" % font_text
+                if area_text_cache is not None:
+                    font_text = area_text_cache[area_index - 1].get('fontText', '')
+                else:
+                    font_text = ''
+                    font_el = await row.query_selector('font')
+                    if font_el:
+                        font_text = await font_el.evaluate('el => el.textContent') or ''
+                if font_text:
+                    font_text = "@%s@" % font_text
 
-                        debug.log(f"[AREA KEYWORD]   Checking seats: {font_text.strip('@')}")
+                    debug.log(f"[AREA KEYWORD]   Checking seats: {font_text.strip('@')}")
 
-                        # Skip if only 1-9 seats remaining
-                        SEATS_1_9 = ["@%d@" % i for i in range(1, 10)]
-                        if any(seat in font_text for seat in SEATS_1_9):
-                            debug.log(f"[AREA KEYWORD]   Insufficient seats (need {config_dict['ticket_number']}, only {font_text.strip('@')} available)")
-                            continue
-                        else:
-                            debug.log(f"[AREA KEYWORD]   Sufficient seats available")
+                    # Skip if only 1-9 seats remaining
+                    SEATS_1_9 = ["@%d@" % i for i in range(1, 10)]
+                    if any(seat in font_text for seat in SEATS_1_9):
+                        debug.log(f"[AREA KEYWORD]   Insufficient seats (need {config_dict['ticket_number']}, only {font_text.strip('@')} available)")
+                        continue
+                    else:
+                        debug.log(f"[AREA KEYWORD]   Sufficient seats available")
             except:
                 pass
 
@@ -1959,7 +2099,7 @@ async def nodriver_get_tixcraft_target_area(el, config_dict, area_keyword_item):
 
     return is_need_refresh, matched_blocks
 
-async def nodriver_ticket_number_select_fill(tab, select_obj, ticket_number, select_id=None):
+async def nodriver_ticket_number_select_fill(tab, select_obj, ticket_number, select_id=None, allow_less_tickets=False):
     """簡化版本：參考 Chrome 邏輯設定票券數量，並檢查 option 是否可用
 
     Args:
@@ -1967,6 +2107,7 @@ async def nodriver_ticket_number_select_fill(tab, select_obj, ticket_number, sel
         select_obj: The select element (for compatibility)
         ticket_number: Target ticket count to select
         select_id: The specific select element ID to use (fixes Issue #200/#201)
+        allow_less_tickets: Allow selecting the largest available count below ticket_number
     """
     is_ticket_number_assigned = False
 
@@ -2003,11 +2144,16 @@ async def nodriver_ticket_number_select_fill(tab, select_obj, ticket_number, sel
                     return {{success: true, selected: "{ticket_number}"}};
                 }}
 
-                // Fallback: select max available option instead of hardcoded "1"
+                if (!{str(bool(allow_less_tickets)).lower()}) {{
+                    return {{success: false, error: "Target ticket count unavailable"}};
+                }}
+
+                // Fallback: select max available option below target ticket count.
                 const validOptions = Array.from(select.options).filter(opt =>
                     !opt.disabled &&
                     !soldOutKeywords.includes(opt.value) &&
                     parseInt(opt.value) > 0 &&
+                    parseInt(opt.value) < parseInt("{ticket_number}") &&
                     !isNaN(parseInt(opt.value))
                 );
 
@@ -2031,7 +2177,7 @@ async def nodriver_ticket_number_select_fill(tab, select_obj, ticket_number, sel
             is_ticket_number_assigned = result.get('success', False)
 
     except Exception as exc:
-        logger.warning(f"Failed to set ticket number: {exc}")
+        pass
 
     return is_ticket_number_assigned
 
@@ -2266,7 +2412,7 @@ async def nodriver_tixcraft_assign_ticket_number(tab, config_dict):
     # Get select ID for JavaScript operations
     select_id = matched_ticket['id'] if matched_ticket else None
 
-    # 檢查是否已經選擇了票券數量（非 "0"）
+    # 檢查是否已經選擇了符合設定的票券數量
     if select_id:
         try:
             # 使用 JavaScript 取得當前選中的值（使用正確的 select ID）
@@ -2281,8 +2427,14 @@ async def nodriver_tixcraft_assign_ticket_number(tab, config_dict):
             current_value = util.parse_nodriver_result(current_value)
 
             if current_value and current_value != "0" and str(current_value).isnumeric():
-                is_ticket_number_assigned = True
-                debug.log(f"Ticket number already set to: {current_value}")
+                target_ticket_number = int(config_dict.get("ticket_number", 1))
+                current_ticket_number = int(current_value)
+                allow_less_tickets = config_dict.get("tixcraft", {}).get("allow_less_tickets", False)
+                is_expected_count = current_ticket_number == target_ticket_number
+                is_allowed_less_count = allow_less_tickets and 0 < current_ticket_number < target_ticket_number
+                if is_expected_count or is_allowed_less_count:
+                    is_ticket_number_assigned = True
+                    debug.log(f"Ticket number already set to: {current_value}")
         except Exception as exc:
             debug.log(f"Failed to check current selected value: {exc}")
 
@@ -2314,7 +2466,8 @@ async def nodriver_tixcraft_ticket_main(tab, config_dict, ocr, Captcha_Browser, 
     # 檢查是否已經設定過票券數量（方案 B：狀態標記）
     current_url, _ = await nodriver_current_url(tab)
     ticket_number = str(config_dict["ticket_number"])
-    ticket_state_key = f"ticket_assigned_{current_url}_{ticket_number}"
+    allow_less_tickets = config_dict.get("tixcraft", {}).get("allow_less_tickets", False)
+    ticket_state_key = f"ticket_assigned_{current_url}_{ticket_number}_{int(allow_less_tickets)}"
 
     if ticket_state_key in _state and _state[ticket_state_key]:
         debug.log(f"Ticket number already set ({ticket_number}), skipping")
@@ -2344,7 +2497,13 @@ async def nodriver_tixcraft_ticket_main(tab, config_dict, ocr, Captcha_Browser, 
 
     if not is_ticket_number_assigned:
         debug.log(f"Setting ticket number: {ticket_number}")
-        is_ticket_number_assigned = await nodriver_ticket_number_select_fill(tab, select_obj, ticket_number, select_id)
+        is_ticket_number_assigned = await nodriver_ticket_number_select_fill(
+            tab,
+            select_obj,
+            ticket_number,
+            select_id,
+            allow_less_tickets=allow_less_tickets,
+        )
 
     # Record state after successful setting
     if is_ticket_number_assigned:
@@ -2424,19 +2583,27 @@ async def nodriver_tixcraft_keyin_captcha_code(tab, answer="", auto_submit=False
 
                     if auto_submit:
                         # 提交前確認票券數量是否已設定
-                        ticket_number_ok = await tab.evaluate('''
-                            (function() {
+                        ticket_number = str(config_dict.get("ticket_number", 2)) if config_dict else "2"
+                        allow_less_tickets = config_dict.get("tixcraft", {}).get("allow_less_tickets", False) if config_dict else False
+                        ticket_number_ok = await tab.evaluate(f'''
+                            (function() {{
                                 const select = document.querySelector('.mobile-select') ||
                                               document.querySelector('select[id*="TicketForm_ticketPrice_"]');
-                                return select && select.value !== "0" && select.value !== "";
-                            })();
+                                if (!select || select.value === "0" || select.value === "") return false;
+                                const current = parseInt(select.value);
+                                const target = parseInt("{ticket_number}");
+                                if (isNaN(current) || isNaN(target)) return false;
+                                if ({str(bool(allow_less_tickets)).lower()}) {{
+                                    return current > 0 && current <= target;
+                                }}
+                                return current === target;
+                            }})();
                         ''')
                         ticket_number_ok = util.parse_nodriver_result(ticket_number_ok)
 
                         if not ticket_number_ok and config_dict:
                             debug.log("[TIXCRAFT CAPTCHA] Warning: Ticket number not set, resetting...")
                             # Reset ticket number
-                            ticket_number = str(config_dict.get("ticket_number", 2))
                             await tab.evaluate(f'''
                                 (function() {{
                                     const select = document.querySelector('.mobile-select') ||
@@ -2452,8 +2619,8 @@ async def nodriver_tixcraft_keyin_captcha_code(tab, answer="", auto_submit=False
                         await nodriver_check_checkbox_enhanced(tab, '#TicketForm_agree')
 
                         # 最終確認所有欄位都已填寫
-                        form_ready = await tab.evaluate('''
-                            (function() {
+                        form_ready = await tab.evaluate(f'''
+                            (function() {{
                                 const select = document.querySelector('.mobile-select') ||
                                               document.querySelector('select[id*="TicketForm_ticketPrice_"]');
                                 const verify = document.querySelector('#TicketForm_verifyCode');
@@ -2462,17 +2629,29 @@ async def nodriver_tixcraft_keyin_captcha_code(tab, answer="", auto_submit=False
                                 // Ticketmaster check-captcha page has no ticket selector
                                 // Ticket number is already set on previous page
                                 const isTicketmaster = window.location.href.includes('ticketmaster');
-                                const ticketOk = isTicketmaster ? true : (select && select.value !== "0" && select.value !== "");
+                                let ticketOk = true;
+                                if (!isTicketmaster) {{
+                                    ticketOk = false;
+                                    if (select && select.value !== "0" && select.value !== "") {{
+                                        const current = parseInt(select.value);
+                                        const target = parseInt("{ticket_number}");
+                                        if (!isNaN(current) && !isNaN(target)) {{
+                                            ticketOk = {str(bool(allow_less_tickets)).lower()}
+                                                ? (current > 0 && current <= target)
+                                                : (current === target);
+                                        }}
+                                    }}
+                                }}
 
-                                return {
+                                return {{
                                     ticket: ticketOk,
                                     verify: verify && verify.value.length === 4,
                                     agree: agree && agree.checked,
                                     ready: ticketOk &&
                                            (verify && verify.value.length === 4) &&
                                            (agree && agree.checked)
-                                };
-                            })();
+                                }};
+                            }})();
                         ''')
                         form_ready = util.parse_nodriver_result(form_ready)
 
@@ -2773,7 +2952,7 @@ async def nodriver_tixcraft_ticket_main_ocr(tab, config_dict, ocr, Captcha_Brows
         if is_form_submitted:
             _state["ocr_completed_url"] = current_url
 
-async def nodriver_ticketmaster_check_ip_block(tab, config_dict):
+async def nodriver_ticketmaster_check_ip_block(tab, config_dict, current_url=""):
     """Detect PerimeterX EPS block page on tixcraft/ticketmaster domains.
 
     When blocked, waits 4-7 minutes (random) then navigates back to original URL.
@@ -2814,10 +2993,17 @@ async def nodriver_ticketmaster_check_ip_block(tab, config_dict):
 
         original_url = result.get("rr", "")
         client_ip = result.get("client_ip", "unknown")
-        # Random 4-7 minutes (240-420 seconds) to vary timing
-        wait_seconds = random.randint(240, 420)
+        scope_url = original_url or current_url
+        wait_seconds, is_custom_delay = _resolve_soft_block_wait_seconds(config_dict, scope_url)
 
-        debug.log(f"[EPS BLOCK] IP blocked (IP: {client_ip}), waiting {wait_seconds}s before retry")
+        if is_custom_delay:
+            debug.log(
+                f"[EPS BLOCK] IP blocked (IP: {client_ip}), using custom TixCraft soft-block delay: {wait_seconds}s"
+            )
+        else:
+            debug.log(
+                f"[EPS BLOCK] IP blocked (IP: {client_ip}), using default delay: {wait_seconds}s before retry"
+            )
         _state["ip_block_until"] = time.time() + wait_seconds
 
         waited = 0
@@ -2958,23 +3144,20 @@ async def nodriver_tixcraft_main(tab, url, config_dict, ocr, Captcha_Browser):
     # Queue-it virtual waiting room detection (TixCraft + Ticketmaster SG)
     # Pattern: ported from platforms/ibon.py — URL-based, customerId-agnostic.
     # Both family platforms route high-traffic users to *.queue-it.net before EPS evaluates.
-    url_lower = url.lower()
-    if 'queue-it.net' in url_lower:
-        if _state.get("queue_it_enter_time") is None:
-            _state["queue_it_enter_time"] = time.time()
+    was_in_queue = _state.get("queue_it_enter_time") is not None
+    should_pause, elapsed = _process_queue_it_state(url, _state, time.time())
+    if should_pause:
+        if not was_in_queue:
             debug.log("[TIXCRAFT] Queue-IT entered, waiting...")
         return False
-    else:
-        if _state.get("queue_it_enter_time") is not None:
-            elapsed = time.time() - _state["queue_it_enter_time"]
-            debug.log(f"[TIXCRAFT] Queue-IT passed (waited {elapsed:.1f}s)")
-            _state["queue_it_enter_time"] = None
+    if elapsed is not None:
+        debug.log(f"[TIXCRAFT] Queue-IT passed (waited {elapsed:.1f}s)")
 
     await nodriver_tixcraft_home_close_window(tab)
 
-    # EPS block detection for tixcraft and ticketmaster domains (Issue #289)
-    if 'tixcraft.com' in url or 'ticketmaster' in url:
-        if await nodriver_ticketmaster_check_ip_block(tab, config_dict):
+    # EPS block detection for TixCraft family and Ticketmaster domains (Issue #289)
+    if _is_tixcraft_soft_block_scope(url) or 'ticketmaster' in url:
+        if await nodriver_ticketmaster_check_ip_block(tab, config_dict, current_url=url):
             return False
 
     # special case for same event re-open, redirect to user's homepage.

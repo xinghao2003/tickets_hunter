@@ -1,7 +1,7 @@
 # 安裝與環境設定
 
 **文件說明**：引導開發者完成 Tickets Hunter 環境設定、依賴套件安裝與開發環境準備
-**最後更新**：2026-03-09
+**最後更新**：2026-06-02
 
 ---
 
@@ -79,14 +79,14 @@ pip install ddddocr
 | **ZenDriver** | `"nodriver"` | 最強反偵測，支援 12 個平台（後端為 zendriver，nodriver 的活躍 fork） | ⭐⭐⭐ 推薦 |
 | Chrome | `"chrome"` | 傳統模式，維護中 | ⭐ |
 
-### ZenDriver 支援平台（12 個完全支援）
+### ZenDriver 支援平台（13 個完全支援）
 
 | 類別 | 平台 | 完成度 |
 |------|------|--------|
 | **TixCraft Family** | 拓元、添翼、獨立音樂 | 95% |
 | **台灣主流** | KKTIX、TicketPlus、iBon | 95% |
 | **年代/寬宏** | KHAM、年代售票、UDN | 90-100% |
-| **其他** | TicketMaster、HK Ticketing、FamiTicket | 89-98% |
+| **其他** | TicketMaster、HK Ticketing、FamiTicket、FunOne | 89-98% |
 
 ---
 
@@ -97,12 +97,6 @@ pip install ddddocr
 cd tickets_hunter/src
 python settings.py
 # 開啟瀏覽器訪問 http://127.0.0.1:16888/
-```
-
-### 桌面介面（舊版）
-```bash
-cd tickets_hunter/src
-python settings_old.py
 ```
 
 ---

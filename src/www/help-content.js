@@ -207,9 +207,10 @@ const HELP_CONTENT = {
         <tbody>
           <tr><td>KKTIX</td><td>會員序號（member_code）、粉絲驗證問題答案</td></tr>
           <tr><td>TicketPlus（遠大）</td><td>優惠序號（exclusive_code）</td></tr>
+          <tr><td>TixCraft／Ticketmaster</td><td>驗證題的會員編號／序號類提示備援答案（例如 Weverse 預購 MY MEMBERSHIP）</td></tr>
         </tbody>
       </table>
-      <p class="text-muted small mb-0">留空則不自動填入。若活動不需序號可留空，對搶票流程無影響。</p>`,
+      <p class="text-muted small mb-0">留空則不自動填入。TixCraft／Ticketmaster 僅在驗證題明確要求會員、序號或編號時才會自動送出此欄位作為備援，避免被無關題目浪費嘗試次數。</p>`,
     link: null
   },
 
@@ -369,6 +370,40 @@ const HELP_CONTENT = {
         </tbody>
       </table>
       <p class="text-warning-emphasis small mb-0"><strong>注意：</strong>TixCraft 等平台偵測到過於頻繁的刷新可能觸發限制，建議不要低於 3 秒。</p>`,
+    link: null
+  },
+
+  tixcraft_soft_block_delay: {
+    title: '暫時鎖定等待秒數',
+    short: '自訂拓元、添翼、Indievox 白畫面暫時鎖定後的等待秒數',
+    detail: `
+      <p>當程式遇到拓元家族白畫面暫時鎖定時，可用此欄位指定多久後再嘗試返回原頁面。</p>
+      <table class="table table-sm table-bordered">
+        <thead><tr><th>設定值</th><th>行為</th></tr></thead>
+        <tbody>
+          <tr><td>留空</td><td>沿用預設隨機 <code>240-420</code> 秒</td></tr>
+          <tr><td><code>30</code></td><td>固定等待 30 秒後重試</td></tr>
+          <tr><td><code>60</code></td><td>固定等待 60 秒後重試</td></tr>
+        </tbody>
+      </table>
+      <p><strong>套用範圍：</strong>僅影響拓元、添翼、Indievox 的白畫面暫時鎖定等待，不影響 Ticketmaster。</p>
+      <p class="text-warning-emphasis small mb-0"><strong>注意：</strong>若設得太短，可能仍在封鎖期間內，重試後依然會回到白畫面。</p>`,
+    link: null
+  },
+
+  tixcraft_allow_less_tickets: {
+    title: '不足張數仍購買',
+    short: '拓元家族票數不足時，允許購買小於設定張數的最大可用張數',
+    detail: `
+      <p>此開關只影響拓元、添翼、Indievox。預設關閉，避免買到少於您原本設定的張數。</p>
+      <table class="table table-sm table-bordered">
+        <thead><tr><th>狀態</th><th>行為</th></tr></thead>
+        <tbody>
+          <tr><td>關閉（預設）</td><td>設定 4 張但只剩 3、2、1 可選時，不送出並等待重新整理</td></tr>
+          <tr><td>開啟</td><td>設定 4 張但只剩 3、2、1 可選時，改選 3 張並繼續送出</td></tr>
+        </tbody>
+      </table>
+      <p class="text-warning-emphasis small mb-0"><strong>注意：</strong>開啟後可能買到少於原本設定的張數，請只在您能接受較少張數時使用。</p>`,
     link: null
   },
 
@@ -880,4 +915,842 @@ const HELP_CONTENT = {
       <p class="mb-0 text-muted small">若需要從其他腳本或工具存取設定 API，可複製此網址使用。</p>`,
     link: 'https://github.com/bouob/tickets_hunter/blob/main/guide/settings-guide.md#設定介面網址remote_url'
   }
+};
+
+const HELP_CONTENT_EN_META = {
+  homepage: {
+    title: 'Homepage',
+    short: 'Enter the event page URL. Multiple ticketing platforms are supported.',
+    detailHtml: `
+      <p><strong>Required field.</strong> Enter the event page URL for the tickets you want to purchase.</p>
+      <p>Example URL formats by platform:</p>
+      <table class="table table-sm table-bordered">
+        <thead><tr><th>Platform</th><th>Example URL</th></tr></thead>
+        <tbody>
+          <tr><td>TixCraft</td><td><code>https://tixcraft.com/activity/detail/...</code></td></tr>
+          <tr><td>KKTIX</td><td><code>https://kktix.com/events/...</code></td></tr>
+          <tr><td>TicketPlus</td><td><code>https://ticketplus.com.tw/activity/...</code></td></tr>
+          <tr><td>iBon</td><td><code>https://tickets.ibon.com.tw/event/...</code></td></tr>
+          <tr><td>FamiTicket</td><td><code>https://ticket.Family.com.tw/...</code></td></tr>
+        </tbody>
+      </table>
+      <p class="mb-0 text-muted small">Tip: copy the event page URL directly from your browser address bar and paste it here.</p>`,
+  },
+  date_keyword: {
+    title: 'Date keywords',
+    short: 'Specify preferred dates. Separate multiple groups with semicolons (;).',
+    detailHtml: `
+      <p>Set the show date keywords you want to select. Tickets Hunter checks them in order and picks the first matching option.</p>
+      <table class="table table-sm table-bordered">
+        <thead><tr><th>Format</th><th>Example</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td>Single keyword</td><td><code>9/11</code></td><td>Matches any option that contains "9/11"</td></tr>
+          <tr><td>Semicolon = OR</td><td><code>9/11;9/22;3/3</code></td><td>Try each group in order and select the first match</td></tr>
+          <tr><td>Space = AND</td><td><code>9/11 evening;9/22 afternoon</code></td><td>All words in the same group must appear together</td></tr>
+          <tr><td>Full date</td><td><code>2025/12/25</code></td><td>Match the exact year, month, and day</td></tr>
+          <tr><td>Combined example</td><td><code>2025/12/25 evening;2025/12/26 afternoon</code></td><td>Prefer the evening show on the 25th first</td></tr>
+          <tr><td>Leave empty</td><td>(blank)</td><td>Auto-select by the configured date selection order</td></tr>
+        </tbody>
+      </table>`,
+    faq: [
+      {
+        q: 'Do semicolons and spaces mean OR and AND?',
+        a: 'Yes. A <strong>semicolon (;)</strong> means OR: each group is tried in sequence and the first match is selected. A <strong>space</strong> means AND: all keywords in the same group must appear together to count as a match.'
+      },
+      {
+        q: 'What happens if I leave it empty?',
+        a: 'If left empty, the system automatically picks the first available date based on the configured date selection order (top to bottom, bottom to top, center, or random). This is effectively the same as allowing date fallback.'
+      }
+    ],
+  },
+  area_keyword: {
+    title: 'Area keywords',
+    short: 'Specify preferred sections or ticket types. Separate multiple groups with semicolons (;).',
+    detailHtml: `
+      <p>Set the seat section or ticket type keywords you want to select. Tickets Hunter checks them in order and picks the first matching option.</p>
+      <table class="table table-sm table-bordered">
+        <thead><tr><th>Format</th><th>Example</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td>Single keyword</td><td><code>Rock Zone</code></td><td>Matches any option that contains "Rock Zone"</td></tr>
+          <tr><td>Semicolon = OR</td><td><code>Rock Zone;VIP;Front Row</code></td><td>Try each group in order and select the first match</td></tr>
+          <tr><td>Space = AND</td><td><code>Rock Zone Front Row;VIP Center</code></td><td>All words in the same group must appear together</td></tr>
+          <tr><td>Ticket type with comma</td><td><code>2,680;1,980</code></td><td>Commas inside a ticket price are treated as plain text</td></tr>
+          <tr><td>Leave empty</td><td>(blank)</td><td>Auto-select by the configured area selection order</td></tr>
+        </tbody>
+      </table>`,
+    faq: [
+      {
+        q: 'Will commas in prices such as 2,680 conflict with separators?',
+        a: 'No. The system uses <strong>semicolons (;)</strong> to separate keyword groups. Commas are treated as plain text. Entering <code>2,680;1,980</code> is correct and the system will try to match either "2,680" or "1,980".'
+      }
+    ],
+  },
+  date_auto_fallback: {
+    title: 'Date fallback',
+    short: 'When no date keywords match, automatically select another available date. Default: off.',
+    detailHtml: `
+      <table class="table table-sm table-bordered mb-3">
+        <thead><tr><th>Status</th><th>Behavior</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><span class="badge bg-secondary">Off (default)</span></td>
+            <td>Strict mode. If none of the date keywords match, <strong>stop selecting</strong> and wait for the next retry cycle.</td>
+          </tr>
+          <tr>
+            <td><span class="badge bg-success">On</span></td>
+            <td>Fallback mode. If no keyword matches, automatically select the first available date based on the configured date selection order.</td>
+          </tr>
+        </tbody>
+      </table>
+      <p><strong>Recommended use:</strong> If you want a specific show, <strong>keep this off</strong> to avoid selecting the wrong session. Turn it on only if any available date is acceptable.</p>
+      <p class="text-warning-emphasis small mb-0"><strong>Note:</strong> When enabled, the system will auto-select if all keywords miss, which may choose a session you do not want.</p>`,
+    faq: [
+      {
+        q: 'Why is this disabled by default?',
+        a: 'It is disabled by default for safety. Selecting the wrong show can cause the purchase to fail or result in unwanted tickets. Strict mode ensures the flow only continues when a clear keyword match is found.'
+      },
+      {
+        q: 'How does the system choose a date when fallback is enabled?',
+        a: 'It uses the configured date selection order: top to bottom, bottom to top, center, or random.'
+      }
+    ],
+  },
+  auto_press_next_step_button: {
+    title: 'Auto-click next step',
+    short: 'Automatically click the "Next Step" button in the KKTIX purchase flow. Default: on.',
+    detailHtml: `
+      <table class="table table-sm table-bordered mb-3">
+        <thead><tr><th>Status</th><th>Behavior</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><span class="badge bg-success">On (default)</span></td>
+            <td>Automatically click "Next Step" after tickets are selected and move to the order page</td>
+          </tr>
+          <tr>
+            <td><span class="badge bg-secondary">Off</span></td>
+            <td>Stay on the seat selection page after tickets are found and wait for manual input</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="text-muted small mb-0">KKTIX only. Keeping this enabled is recommended to reduce delay after tickets are selected.</p>`,
+  },
+  max_dwell_time: {
+    title: 'KKTIX max dwell time',
+    short: 'Maximum time to stay on the KKTIX order page, in seconds. Default: 90.',
+    detailHtml: `
+      <p>Set the maximum time that the bot stays on the KKTIX order form page before submitting automatically.</p>
+      <p>After this time is reached, the order is submitted automatically to reduce the chance of losing the tickets because the page times out.</p>
+      <table class="table table-sm table-bordered">
+        <thead><tr><th>Value</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>90</code> (default)</td><td>Submit automatically after 90 seconds</td></tr>
+          <tr><td>Higher value</td><td>Allow more time for manual review of order details</td></tr>
+          <tr><td>Lower value</td><td>Submit faster, but may submit before you finish checking the form</td></tr>
+        </tbody>
+      </table>
+      <p class="text-muted small mb-0">KKTIX only. If autofill is configured, 30-60 seconds is usually enough.</p>`,
+  },
+  play_ticket_sound: {
+    title: 'Play sound when tickets are found',
+    short: 'Play an alert sound when tickets are selected. Default: on.',
+    detailHtml: `
+      <p>Play an alert sound when the bot successfully selects tickets.</p>
+      <p>The sound file path is configured in the "Sound file" field. The built-in default is <code>ding-dong.wav</code>.</p>
+      <p class="text-muted small mb-0">This is especially useful when the browser is running in the background and you are not watching the screen continuously.</p>`,
+  },
+  play_order_sound: {
+    title: 'Play sound on order submit',
+    short: 'Play an alert sound after the order is submitted. Default: on.',
+    detailHtml: `
+      <p>Play an alert sound when the order is submitted successfully so you can complete payment quickly.</p>
+      <p>Most platforms allow only a limited time to finish payment after the order is created, so the alert helps you avoid missing the payment window.</p>`,
+  },
+  play_sound_filename: {
+    title: 'Sound file',
+    short: 'Custom file path for the notification sound.',
+    detailHtml: `
+      <p>Set the file path used when alert sounds are played.</p>
+      <p><strong>Default:</strong> <code>assets/sounds/ding-dong.wav</code> (built in)</p>
+      <p><strong>Supported formats:</strong> <code>.wav</code>, <code>.mp3</code></p>
+      <p>You can use either a relative path (relative to the program working directory) or an absolute path.</p>
+      <p class="text-muted small mb-0">If left empty or if the file does not exist, the system default sound is used.</p>`,
+  },
+  window_size: {
+    title: 'Browser window size',
+    short: 'Set the browser window size for ticketing. Format: width,height.',
+    detailHtml: `
+      <p>Set the width and height of the ticketing browser window in pixels.</p>
+      <p><strong>Format:</strong> <code>width,height</code> (for example <code>600,1024</code>)</p>
+      <table class="table table-sm table-bordered">
+        <thead><tr><th>Value</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>600,1024</code> (default)</td><td>Narrow window so the browser does not occupy the whole screen</td></tr>
+          <tr><td><code>1280,800</code></td><td>Standard desktop size</td></tr>
+        </tbody>
+      </table>
+      <p class="text-muted small mb-0">Some platforms switch to a responsive layout when the window is too small. If that causes issues, try increasing the size.</p>`,
+  },
+  discount_code: {
+    title: 'Discount / member code',
+    short: 'Automatically fill discount codes, member codes, or similar verification fields.',
+    detailHtml: `
+      <p>When set, the bot automatically detects and fills serial code or discount code fields on the order page.</p>
+      <table class="table table-sm table-bordered">
+        <thead><tr><th>Platform</th><th>Usage</th></tr></thead>
+        <tbody>
+          <tr><td>KKTIX</td><td>Member code and fan-verification answers</td></tr>
+          <tr><td>TicketPlus</td><td>Exclusive discount code</td></tr>
+          <tr><td>TixCraft / Ticketmaster</td><td>Fallback answer when a verification prompt explicitly asks for a membership number or serial number</td></tr>
+        </tbody>
+      </table>
+      <p class="text-muted small mb-0">If left empty, nothing is filled automatically. On TixCraft and Ticketmaster, this value is only submitted as a fallback when the prompt clearly asks for a membership number or serial to avoid wasting attempts on unrelated questions.</p>`,
+  },
+  ocr_model_path: {
+    title: 'Custom OCR model',
+    short: 'Path to a self-trained OCR model folder. Currently supported only on Ticketmaster.',
+    detailHtml: `
+      <p>Enter the folder path that contains your self-trained OCR model.</p>
+      <p><strong>The folder must include:</strong></p>
+      <ul>
+        <li><code>custom.onnx</code> - the ONNX model file</li>
+        <li><code>charsets.json</code> - the character set definition</li>
+      </ul>
+      <p><strong>Example path:</strong> <code>assets/ocr_model</code> (relative path)</p>
+      <table class="table table-sm table-bordered">
+        <thead><tr><th>Condition</th><th>Behavior</th></tr></thead>
+        <tbody>
+          <tr><td>Path not set</td><td>Use the default ddddocr model</td></tr>
+          <tr><td>Files missing</td><td>Show a warning and automatically fall back to the default model</td></tr>
+        </tbody>
+      </table>
+      <p class="text-warning-emphasis small mb-0"><strong>Note:</strong> This setting is currently supported only on Ticketmaster.</p>`,
+  },
+  tixcraft_sid: {
+    title: 'TixCraft family cookie',
+    short: 'Paste a logged-in session cookie for TixCraft, iVIS, or TicketPlus.',
+    detailHtml: `
+      <p>With this cookie, the bot can skip the login page and start directly from an authenticated session. Supported platforms: <strong>TixCraft</strong>, <strong>iVIS</strong>, and <strong>TicketPlus</strong>.</p>
+      <p><strong>How to get it in Chrome:</strong></p>
+      <ol>
+        <li>Log in to TixCraft in your browser.</li>
+        <li>Press <code>F12</code> to open Developer Tools.</li>
+        <li>Open "Application" -> "Cookies" -> select <code>tixcraft.com</code>.</li>
+        <li>Find <code>TIXUISID</code> (or <code>IVUISID</code> / <code>TIXPUISID</code>).</li>
+        <li>Copy the Value field and paste it here.</li>
+      </ol>
+      <p class="text-warning-emphasis small mb-0"><strong>Note:</strong> A correct <code>TIXUISID</code> should not start with <code>g.</code>. If it does, you copied the wrong value.</p>`,
+    faq: [
+      {
+        q: 'What if the cookie expires?',
+        a: 'Log in again and copy a fresh cookie value. These cookies usually stay valid for several days to several weeks.'
+      }
+    ],
+  },
+  ibonqware: {
+    title: 'iBon cookie',
+    short: 'Paste the logged-in session cookie for the iBon ticketing site.',
+    detailHtml: `
+      <p>With this cookie, the bot can skip the iBon login flow.</p>
+      <p><strong>How to get it in Chrome:</strong></p>
+      <ol>
+        <li>Log in to the iBon ticketing site (<code>tickets.ibon.com.tw</code>).</li>
+        <li>Press <code>F12</code> to open Developer Tools.</li>
+        <li>Open "Application" -> "Cookies" -> select <code>tickets.ibon.com.tw</code>.</li>
+        <li>Find <code>ibonqware</code>.</li>
+        <li>Copy the Value field and paste it here.</li>
+      </ol>`,
+  },
+  funone_session_cookie: {
+    title: 'FunOne cookie',
+    short: 'Paste the logged-in session cookie for FunOne.',
+    detailHtml: `
+      <p>With this cookie, the bot can skip the FunOne login flow (<code>funone.com.tw</code>).</p>
+      <p><strong>How to get it in Chrome:</strong></p>
+      <ol>
+        <li>Log in to the FunOne ticketing site.</li>
+        <li>Press <code>F12</code> to open Developer Tools.</li>
+        <li>Open "Application" -> "Cookies" -> select <code>funone.com.tw</code>.</li>
+        <li>Find <code>ticket_session</code>.</li>
+        <li>Copy the Value field and paste it here.</li>
+      </ol>`,
+  },
+  fansigo_cookie: {
+    title: 'FANSI GO cookie',
+    short: 'Paste the logged-in FANSI GO session cookie. This can replace account/password login.',
+    detailHtml: `
+      <p>With this cookie, the bot logs in through the cookie instead of using an account and password.</p>
+      <p><strong>How to get it in Chrome:</strong></p>
+      <ol>
+        <li>Log in to FANSI GO in your browser.</li>
+        <li>Press <code>F12</code> to open Developer Tools.</li>
+        <li>Open "Application" -> "Cookies" -> select <code>fansigo.com</code>.</li>
+        <li>Find <code>FansiAuthInfo</code>.</li>
+        <li>Copy the Value field and paste it here.</li>
+      </ol>
+      <p class="text-muted small mb-0">If both account credentials and a cookie are filled in, the bot uses the cookie first.</p>`,
+  },
+  idle_keyword: {
+    title: 'System time pause keywords',
+    short: 'Pause ticketing automatically at specific times. Format: HH:MM:SS, separated by semicolons.',
+    detailHtml: `
+      <p>When the system time matches any value in this field, the bot pauses automatically.</p>
+      <p><strong>Format:</strong> <code>HH:MM:SS</code> (hour:minute:second). Separate multiple values with semicolons.</p>
+      <p><strong>Example:</strong> <code>12:00:00;18:00:00</code> (pause every day at noon and 6 PM)</p>
+      <p class="text-muted small mb-0">Use together with "resume keywords" for automatic ticketing schedules. For more details, open the "Time control" help section below.</p>`,
+  },
+  resume_keyword: {
+    title: 'System time resume keywords',
+    short: 'Resume ticketing automatically at specific times. Format: HH:MM:SS, separated by semicolons.',
+    detailHtml: `
+      <p>When the system time matches any value in this field, the bot resumes automatically.</p>
+      <p><strong>Format:</strong> <code>HH:MM:SS</code> (hour:minute:second). Separate multiple values with semicolons.</p>
+      <p><strong>Example:</strong> <code>10:00:00;14:00:00</code> (resume every day at 10 AM and 2 PM)</p>
+      <p class="text-muted small mb-0">Use together with "pause keywords" for automatic ticketing schedules. For more details, open the "Time control" help section below.</p>`,
+  },
+  idle_keyword_second: {
+    title: 'Second-based pause keywords',
+    short: 'Pause ticketing automatically at specific seconds each minute. Format: SS, separated by semicolons.',
+    detailHtml: `
+      <p>When the <strong>seconds</strong> part of the system time matches a configured value, the bot pauses automatically. This triggers once every minute.</p>
+      <p><strong>Format:</strong> second values only, <code>SS</code> (00-59). Separate multiple values with semicolons.</p>
+      <p><strong>Example:</strong> <code>00;30</code> (pause at 0 and 30 seconds every minute)</p>
+      <p class="text-muted small mb-0">Useful when you need precise second-level control. For more details, open the "Time control" help section below.</p>`,
+  },
+  resume_keyword_second: {
+    title: 'Second-based resume keywords',
+    short: 'Resume ticketing automatically at specific seconds each minute. Format: SS, separated by semicolons.',
+    detailHtml: `
+      <p>When the <strong>seconds</strong> part of the system time matches a configured value, the bot resumes automatically. This triggers once every minute.</p>
+      <p><strong>Format:</strong> second values only, <code>SS</code> (00-59). Separate multiple values with semicolons.</p>
+      <p><strong>Example:</strong> <code>05;35</code> (resume at 5 and 35 seconds every minute)</p>
+      <p class="text-muted small mb-0">Useful when you need precise second-level control. For more details, open the "Time control" help section below.</p>`,
+  },
+  auto_reload_page_interval: {
+    title: 'Auto reload interval',
+    short: 'Automatic page reload interval in seconds. Set to 0 to disable.',
+    detailHtml: `
+      <p>Set how often the bot reloads the target page while waiting, in seconds.</p>
+      <table class="table table-sm table-bordered">
+        <thead><tr><th>Value</th><th>Behavior</th></tr></thead>
+        <tbody>
+          <tr><td><code>0</code></td><td>Disable auto reload</td></tr>
+          <tr><td><code>3</code></td><td>Reload every 3 seconds</td></tr>
+          <tr><td><code>5</code> (recommended)</td><td>Reload every 5 seconds for a balance between speed and load</td></tr>
+        </tbody>
+      </table>
+      <p class="text-warning-emphasis small mb-0"><strong>Note:</strong> Platforms such as TixCraft may throttle or restrict overly frequent reloads. Using less than 3 seconds is not recommended.</p>`,
+  },
+  tixcraft_soft_block_delay: {
+    title: 'TixCraft soft-block delay',
+    short: 'Custom wait time after the TixCraft-family white-screen soft block.',
+    detailHtml: `
+      <p>When the bot hits the TixCraft-family white-screen soft block, this value controls how long it waits before returning to the original page.</p>
+      <table class="table table-sm table-bordered">
+        <thead><tr><th>Value</th><th>Behavior</th></tr></thead>
+        <tbody>
+          <tr><td>Empty</td><td>Keep the default randomized <code>240-420</code> seconds</td></tr>
+          <tr><td><code>30</code></td><td>Always wait 30 seconds before retrying</td></tr>
+          <tr><td><code>60</code></td><td>Always wait 60 seconds before retrying</td></tr>
+        </tbody>
+      </table>
+      <p><strong>Scope:</strong> applies only to TixCraft, TeamEar, and Indievox. It does not change Ticketmaster behavior.</p>
+      <p class="text-warning-emphasis small mb-0"><strong>Note:</strong> If you set it too short, the block may still be active and the retry can land on the same white screen again.</p>`,
+  },
+  tixcraft_allow_less_tickets: {
+    title: 'Buy fewer TixCraft tickets if needed',
+    short: 'Allow the TixCraft family to buy the largest available count below your configured ticket count.',
+    detailHtml: `
+      <p>This switch applies only to TixCraft, TeamEar, and Indievox. It is off by default to avoid buying fewer tickets than requested.</p>
+      <table class="table table-sm table-bordered">
+        <thead><tr><th>Status</th><th>Behavior</th></tr></thead>
+        <tbody>
+          <tr><td>Off (default)</td><td>If you request 4 tickets but only 3, 2, and 1 are available, do not submit and wait for a reload</td></tr>
+          <tr><td>On</td><td>If you request 4 tickets but only 3, 2, and 1 are available, select 3 and continue submitting</td></tr>
+        </tbody>
+      </table>
+      <p class="text-warning-emphasis small mb-0"><strong>Note:</strong> Enable this only when you accept buying fewer tickets than originally configured.</p>`,
+  },
+  headless: {
+    title: 'Headless mode',
+    short: 'Run the browser in the background without showing a window. Default: off.',
+    detailHtml: `
+      <table class="table table-sm table-bordered mb-3">
+        <thead><tr><th>Status</th><th>Behavior</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><span class="badge bg-secondary">Off (default)</span></td>
+            <td>Show the browser window so you can observe the ticketing flow in real time</td>
+          </tr>
+          <tr>
+            <td><span class="badge bg-warning text-dark">On</span></td>
+            <td>Run completely in the background without showing a browser window and save system resources</td>
+          </tr>
+        </tbody>
+      </table>`,
+    faq: [
+      {
+        q: 'Why is long-term use not recommended?',
+        a: 'In headless mode, you cannot immediately notice or handle situations that need manual intervention, such as visual captchas or unexpected pages. It is better to confirm the workflow in normal mode first.'
+      }
+    ],
+  },
+  verbose: {
+    title: 'Verbose logs',
+    short: 'Show detailed runtime logs in the output window. Default: off.',
+    detailHtml: `
+      <table class="table table-sm table-bordered mb-3">
+        <thead><tr><th>Status</th><th>Behavior</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><span class="badge bg-secondary">Off (default)</span></td>
+            <td>Show only important messages such as success and errors</td>
+          </tr>
+          <tr>
+            <td><span class="badge bg-info text-dark">On</span></td>
+            <td>Print detailed information for each step, including timestamps</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="text-muted small mb-0">Tip: enable this when troubleshooting. Turn it off during normal runs to reduce log noise.</p>`,
+  },
+  discord_webhook_url: {
+    title: 'Discord webhook',
+    short: 'Send a Discord notification after ticketing succeeds.',
+    detailHtml: `
+      <p>Enter a Discord webhook URL. The bot sends a notification automatically when ticketing succeeds.</p>
+      <p><strong>How to get the webhook URL:</strong></p>
+      <ol>
+        <li>In Discord, open the target channel and choose Edit Channel.</li>
+        <li>Open "Integrations" -> "Webhooks" -> "New Webhook".</li>
+        <li>Copy the webhook URL and paste it here.</li>
+      </ol>
+      <p><strong>Example format:</strong><br>
+      <code>https://discord.com/api/webhooks/123456789/abcdef...</code></p>
+      <p class="text-muted small mb-0">If left empty, Discord notifications are disabled.</p>`,
+  },
+  telegram_bot_token: {
+    title: 'Telegram bot token',
+    short: 'Token for the Telegram bot that sends notifications.',
+    detailHtml: `
+      <p>Enter the Telegram bot token. When ticketing succeeds, the bot sends notifications through this Telegram bot.</p>
+      <p><strong>How to get the token:</strong></p>
+      <ol>
+        <li>Search for <code>@BotFather</code> in Telegram.</li>
+        <li>Send <code>/newbot</code> to create a new bot.</li>
+        <li>Follow the prompts, then copy the issued token.</li>
+      </ol>
+      <p><strong>Format:</strong> <code>123456789:ABCdefGHI-jklMNO...</code></p>
+      <p class="text-muted small mb-0">If left empty, Telegram notifications are disabled.</p>`,
+  },
+  telegram_chat_id: {
+    title: 'Telegram chat ID',
+    short: 'Telegram chat IDs that receive notifications. Separate multiple IDs with commas.',
+    detailHtml: `
+      <p>Enter the Telegram chat ID that should receive notifications.</p>
+      <p><strong>How to get the chat ID:</strong></p>
+      <ol>
+        <li>Send any message to the bot you created.</li>
+        <li>Open <code>https://api.telegram.org/bot{TOKEN}/getUpdates</code> in your browser.</li>
+        <li>Find the value of <code>chat.id</code> in the JSON response.</li>
+      </ol>
+      <p><strong>Multiple recipients:</strong> Separate multiple IDs with commas, for example: <code>123456789, 987654321</code></p>`,
+  },
+  server_port: {
+    title: 'Settings UI port',
+    short: 'HTTP listening port for the local settings UI. Default: 16888.',
+    detailHtml: `
+      <p>Set the HTTP listening port used by the Tickets Hunter settings page.</p>
+      <p>Default value: <code>16888</code>. Default URL: <code>http://localhost:16888</code></p>
+      <p>If the default port is already used by another application, choose any value between 1024 and 65535.</p>
+      <p class="text-warning-emphasis small mb-0"><strong>Note:</strong> After changing the port, restart the program and reconnect using the new port.</p>`,
+    faq: [
+      {
+        q: 'How do I reconnect after changing the port?',
+        a: 'After restarting, open <code>http://localhost:{new port}</code> in your browser.'
+      }
+    ],
+  },
+  ocr_captcha_enable: {
+    title: 'OCR captcha recognition',
+    short: 'Enable OCR-based text captcha recognition. Default: off.',
+    detailHtml: `
+      <p>When enabled, the bot uses an OCR model to recognize text captchas automatically and fill in the answer.</p>
+      <table class="table table-sm table-bordered">
+        <thead><tr><th>Status</th><th>Behavior</th></tr></thead>
+        <tbody>
+          <tr><td><span class="badge bg-secondary">Off</span></td><td>Pause on captcha and wait for manual input</td></tr>
+          <tr><td><span class="badge bg-success">On</span></td><td>Recognize the captcha and fill it automatically</td></tr>
+        </tbody>
+      </table>
+      <p class="text-muted small mb-0">Currently supports text captchas on platforms such as TixCraft, iBon, and KHAM.</p>`,
+    faq: [
+      {
+        q: 'What if the recognition result is inaccurate?',
+        a: 'Try disabling OCR and entering the captcha manually, or check whether a custom model is available for that platform.'
+      }
+    ],
+  },
+  ocr_captcha_force_submit: {
+    title: 'OCR auto-submit',
+    short: 'Submit immediately after OCR fills the captcha, without waiting for confirmation. Default: off.',
+    detailHtml: `
+      <table class="table table-sm table-bordered mb-3">
+        <thead><tr><th>Status</th><th>Behavior</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><span class="badge bg-secondary">Off (default)</span></td>
+            <td>Fill the OCR result, but still wait for manual confirmation before submitting</td>
+          </tr>
+          <tr>
+            <td><span class="badge bg-warning text-dark">On</span></td>
+            <td>Submit immediately after OCR finishes, without waiting for any confirmation</td>
+          </tr>
+        </tbody>
+      </table>`,
+    faq: [
+      {
+        q: 'What happens if OCR is wrong and auto-submit is enabled?',
+        a: 'Most platforms simply reject the captcha and let the bot try again. It usually does not cause a permanent failure, but it does waste one attempt. Enable this only after you are confident in the recognition quality.'
+      }
+    ],
+  },
+  user_guess_string: {
+    title: 'Custom answer dictionary',
+    short: 'Pre-fill possible answers for text verification questions. Separate multiple answers with semicolons.',
+    detailHtml: `
+      <p>When the system detects a verification question that requires a text answer, it tries the answers listed here first.</p>
+      <p><strong>Format:</strong> separate multiple answers with semicolons (<code>;</code>)</p>
+      <p><strong>Example:</strong> <code>Answer A;Answer B;Correct Answer</code></p>
+      <p>If this field is empty and "auto-guess options" is enabled, the system tries to infer the answer automatically.</p>
+      <p class="text-muted small mb-0">Tip: providing known correct answers can significantly increase the success rate of verification.</p>`,
+    faq: [
+      {
+        q: 'Do answers have priority order?',
+        a: 'Yes. The system tries them in the order they are listed. Put the most likely answer first.'
+      }
+    ],
+  },
+  ticket_number: {
+    title: 'Tickets',
+    short: 'Number of tickets to purchase each time. Range: 1-10.',
+    detailHtml: `
+      <p>Set how many tickets the bot should try to select in each purchase attempt.</p>
+      <table class="table table-sm table-bordered">
+        <thead><tr><th>Quantity</th><th>Typical use</th></tr></thead>
+        <tbody>
+          <tr><td>1 ticket</td><td>Solo purchase, highest success rate</td></tr>
+          <tr><td>2 tickets</td><td>Two people attending together</td></tr>
+          <tr><td>3-4 tickets</td><td>Group purchase. Be aware that higher quantities increase the chance of failure when only a few seats remain.</td></tr>
+        </tbody>
+      </table>
+      <p class="text-warning-emphasis small mb-0"><strong>Note:</strong> The higher the ticket count, the higher the chance that the purchase fails because not enough tickets are available. Use the minimum quantity you actually need.</p>`,
+  },
+  refresh_datetime: {
+    title: 'Refresh at specific time',
+    short: 'Wait until a specific date and time before starting the ticketing flow.',
+    detailHtml: `
+      <p>Set the exact date and time when the bot should start trying to get tickets. This is useful when sales open at a specific moment.</p>
+      <p><strong>Format:</strong> <code>YYYY/MM/DD HH:MM:SS</code></p>
+      <p>Example: <code>2025/12/25 10:00:00</code></p>
+      <p>Before the target time, the bot waits and checks the time once per second. As soon as the target time is reached, it starts refreshing and ticketing immediately.</p>
+      <p class="text-muted small mb-0">Tip: set this 1-2 seconds before the official sale time to compensate for network and processing delay.</p>`,
+    faq: [
+      {
+        q: 'What happens if I leave it empty?',
+        a: 'The bot starts ticketing immediately after launch.'
+      },
+      {
+        q: 'What if I start the program after the configured time has already passed?',
+        a: 'The bot starts immediately. It does not wait for another cycle.'
+      }
+    ],
+  },
+  date_select_mode: {
+    title: 'Date selection order',
+    short: 'Choose how available dates are selected when date keywords are empty or date fallback is used.',
+    detailHtml: `
+      <p>When "Date keywords" is empty, or when "Date fallback" is enabled, this setting determines which date is selected.</p>
+      <table class="table table-sm table-bordered">
+        <thead><tr><th>Option</th><th>Behavior</th><th>Typical use</th></tr></thead>
+        <tbody>
+          <tr><td><code>from top to bottom</code></td><td>Select the topmost date in the list</td><td>Prefer the earliest available show</td></tr>
+          <tr><td><code>from bottom to top</code></td><td>Select the bottommost date in the list</td><td>Prefer the latest available show</td></tr>
+          <tr><td><code>center</code></td><td>Select a date near the middle of the list</td><td>Spread selection away from the top and bottom extremes</td></tr>
+          <tr><td><code>random</code></td><td>Select a random available date</td><td>Any session is acceptable</td></tr>
+        </tbody>
+      </table>`,
+    faq: [
+      {
+        q: 'Does this still matter when date keywords are configured?',
+        a: 'Yes. If multiple dates match the keywords, this order decides which one is chosen first. It is also used when date fallback is enabled.'
+      }
+    ],
+  },
+  area_select_mode: {
+    title: 'Area selection order',
+    short: 'Choose how available areas are selected when area keywords are empty or area fallback is used.',
+    detailHtml: `
+      <p>When "Area keywords" is empty, or when "Area fallback" is enabled, this setting determines which area is selected.</p>
+      <table class="table table-sm table-bordered">
+        <thead><tr><th>Option</th><th>Behavior</th></tr></thead>
+        <tbody>
+          <tr><td><code>from top to bottom</code></td><td>Select the topmost area in the list</td></tr>
+          <tr><td><code>from bottom to top</code></td><td>Select the bottommost area in the list</td></tr>
+          <tr><td><code>center</code></td><td>Select an area near the middle of the list</td></tr>
+          <tr><td><code>random</code></td><td>Select a random available area</td></tr>
+        </tbody>
+      </table>
+      <p class="text-muted small mb-0">Tip: on many ticketing sites, area lists are sorted from more expensive / better seats to cheaper / farther seats, so <code>from top to bottom</code> usually means better seats first.</p>`,
+  },
+  keyword_exclude: {
+    title: 'Exclude keywords',
+    short: 'Specify dates or areas that must be skipped even if they match other rules.',
+    detailHtml: `
+      <p>Set keywords for dates or areas that you do not want to select. Matching options are skipped even if they also satisfy other selection rules.</p>
+      <p>The format is the same as the date/area keyword fields. Use semicolons (<code>;</code>) to separate multiple conditions:</p>
+      <table class="table table-sm table-bordered">
+        <thead><tr><th>Example</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>Sold Out</code></td><td>Skip options marked as sold out</td></tr>
+          <tr><td><code>Wheelchair;Accessible</code></td><td>Skip any option containing "Wheelchair" or "Accessible"</td></tr>
+          <tr><td><code>12/24;12/25</code></td><td>Skip sessions on 12/24 and 12/25</td></tr>
+        </tbody>
+      </table>`,
+    faq: [
+      {
+        q: 'If both area keywords and exclude keywords match, which one wins?',
+        a: 'Exclude keywords win. If an option matches both "select" and "exclude" rules, the bot skips it.'
+      }
+    ],
+  },
+  area_auto_fallback: {
+    title: 'Area fallback',
+    short: 'When no area keywords match, automatically select another available area. Default: off.',
+    detailHtml: `
+      <table class="table table-sm table-bordered mb-3">
+        <thead><tr><th>Status</th><th>Behavior</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><span class="badge bg-secondary">Off (default)</span></td>
+            <td>Strict mode. If none of the area keywords match, <strong>stop selecting</strong> and wait for the next retry cycle.</td>
+          </tr>
+          <tr>
+            <td><span class="badge bg-success">On</span></td>
+            <td>Fallback mode. If no keyword matches, automatically select the first available area based on the configured area selection order.</td>
+          </tr>
+        </tbody>
+      </table>
+      <p><strong>Recommended use:</strong> If you specified a particular area such as a front row or standing zone, <strong>keep this off</strong> to avoid unwanted restricted-view or accessible-only areas.</p>
+      <p class="text-warning-emphasis small mb-0"><strong>Note:</strong> Area fallback may select restricted-view seats, wheelchair seats, or other unintended sections. Use carefully.</p>`,
+    faq: [
+      {
+        q: 'Can date fallback and area fallback be configured independently?',
+        a: 'Yes. They are separate switches. You can allow automatic date selection while keeping areas strict, or the other way around.'
+      },
+      {
+        q: 'Why is this disabled by default?',
+        a: 'For safety. Automatic fallback may choose wheelchair seats, restricted-view seats, or higher-priced sections that you did not intend to buy.'
+      }
+    ],
+  },
+  show_timestamp: {
+    title: 'Show timestamps',
+    short: 'Prefix each output line with a [HH:MM:SS] timestamp.',
+    detailHtml: `
+      <p>When enabled, each output line includes a timestamp so you can track the timing of each step in the ticketing flow.</p>
+      <table class="table table-sm table-bordered">
+        <thead><tr><th>Status</th><th>Output format</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><span class="badge bg-secondary">Off (default)</span></td>
+            <td><code>[DATE] found: 2024-12-31</code></td>
+          </tr>
+          <tr>
+            <td><span class="badge bg-success">On</span></td>
+            <td><code>[09:30:15] [DATE] found: 2024-12-31</code></td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="mb-0 text-muted small">Useful for reviewing logs after ticketing and comparing how long each step took.</p>`,
+  },
+  reset_browser_interval: {
+    title: 'Browser restart interval (seconds)',
+    short: 'Restart the browser periodically. Set to 0 to disable.',
+    detailHtml: `
+      <p>Set how many seconds the browser should run before restarting automatically. Use <code>0</code> (default) to disable this feature.</p>
+      <ul>
+        <li>Minimum value: <strong>20 seconds</strong> (any lower value is adjusted to 20 automatically)</li>
+        <li>Set <code>0</code> to disable auto-restart</li>
+      </ul>
+      <p class="text-warning-emphasis small mb-0"><strong>Note:</strong> The automatic restart behavior is not fully implemented in the main program yet. Keeping the default value <code>0</code> is recommended.</p>`,
+  },
+  proxy_server_port: {
+    title: 'Proxy server',
+    short: 'Set the proxy server address in IP:Port format. Leave empty to connect directly.',
+    detailHtml: `
+      <p>Set the proxy server used by the browser for network connections. Leave it empty to connect directly.</p>
+      <p><strong>Format:</strong> <code>IP:Port</code></p>
+      <table class="table table-sm table-bordered">
+        <thead><tr><th>Example</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>127.0.0.1:8080</code></td><td>Local proxy such as Clash or v2ray</td></tr>
+          <tr><td><code>192.168.1.1:3128</code></td><td>LAN proxy server</td></tr>
+          <tr><td>(blank)</td><td>No proxy, connect directly</td></tr>
+        </tbody>
+      </table>
+      <p class="mb-0 text-muted small">If set, the browser launches with the <code>--proxy-server=</code> argument automatically.</p>`,
+  },
+  disable_adjacent_seat: {
+    title: 'Allow non-adjacent seats',
+    short: 'Accept seats that are not next to each other to improve the chance of success.',
+    detailHtml: `
+      <p>Control whether the bot accepts seat combinations that are not adjacent.</p>
+      <table class="table table-sm table-bordered">
+        <thead><tr><th>Status</th><th>Behavior</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><span class="badge bg-secondary">Off (default)</span></td>
+            <td>Select adjacent seats only</td>
+          </tr>
+          <tr>
+            <td><span class="badge bg-success">On</span></td>
+            <td>Allow non-adjacent seats to increase the chance of getting tickets</td>
+          </tr>
+        </tbody>
+      </table>
+      <p><strong>Supported platforms:</strong> iBon, Ticket, KHAM, Ticketmaster</p>
+      <p class="mb-0 text-muted small">Useful when multiple people are attending together but sitting together is not required.</p>`,
+  },
+  hide_some_image: {
+    title: 'Hide some images',
+    short: 'Block non-essential resources to speed up page loading.',
+    detailHtml: `
+      <p>When enabled, the bot blocks some non-essential resources so the ticketing page can load faster.</p>
+      <p><strong>Blocked resource types:</strong></p>
+      <ul>
+        <li>Web fonts (<code>.woff</code>)</li>
+        <li>Site icons (<code>.ico</code>)</li>
+        <li>Some event images</li>
+      </ul>
+      <p class="text-warning-emphasis small mb-0"><strong>Note:</strong> The page may look incomplete after enabling this, but the ticketing flow should still work. If your network speed is already normal, you usually do not need this.</p>`,
+  },
+  block_facebook_network: {
+    title: 'Block Facebook network requests',
+    short: 'Block Facebook tracking scripts and related requests to reduce extra network traffic.',
+    detailHtml: `
+      <p>When enabled, the bot blocks all Facebook-related network requests.</p>
+      <p><strong>Blocked domains:</strong></p>
+      <ul>
+        <li><code>*.facebook.com/*</code></li>
+        <li><code>*.fbcdn.net/*</code></li>
+      </ul>
+      <p>Some ticketing sites embed Facebook tracking scripts. If those scripts slow down the page, enabling this option may improve loading speed.</p>
+      <p class="mb-0 text-muted small">This can be used together with "Hide some images". The effects are complementary.</p>`,
+  },
+  auto_guess_options: {
+    title: 'Auto-guess verification options',
+    short: 'Automatically infer answers for multiple-choice verification questions on supported platforms.',
+    detailHtml: `
+      <p>When enabled, the bot tries to infer the correct answer for multiple-choice verification questions based on the text of the prompt.</p>
+      <p><strong>Typical question types:</strong></p>
+      <ul>
+        <li>Math question, such as "1 + 1 = ?"</li>
+        <li>Geography question, such as "Which city is Taipei 101 in?"</li>
+        <li>General knowledge or event-related questions</li>
+      </ul>
+      <table class="table table-sm table-bordered">
+        <thead><tr><th>Status</th><th>Behavior</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><span class="badge bg-secondary">Off (default)</span></td>
+            <td>Do not guess automatically. Wait for manual selection.</td>
+          </tr>
+          <tr>
+            <td><span class="badge bg-success">On</span></td>
+            <td>Infer and select an answer automatically to speed up the flow.</td>
+          </tr>
+        </tbody>
+      </table>
+      <p><strong>Supported platforms:</strong> KKTIX, TixCraft, iBon</p>
+      <p class="text-warning-emphasis small mb-0"><strong>Note:</strong> Accuracy depends on the question type. A wrong guess can cause the purchase to fail, so test carefully before relying on it.</p>`,
+  },
+  ocr_captcha_image_source: {
+    title: 'OCR image source',
+    short: 'Choose whether captcha images are captured from canvas (default) or NonBrowser.',
+    detailHtml: `
+      <p>Set how the program captures captcha images for OCR.</p>
+      <table class="table table-sm table-bordered">
+        <thead><tr><th>Option</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>canvas</code> (default)</td>
+            <td>Capture the captcha image directly from the page through the JavaScript Canvas API. Suitable for most cases.</td>
+          </tr>
+          <tr>
+            <td><code>NonBrowser</code></td>
+            <td>Launch a separate NonBrowser window to capture the captcha image. This is intended for use with external captcha tools.</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="mb-0 text-muted small">In most cases, keep <code>canvas</code>. Switch to <code>NonBrowser</code> only if the main browser cannot capture the captcha correctly.</p>`,
+  },
+  ocr_captcha_use_universal: {
+    title: 'Use universal OCR model',
+    short: 'Use the built-in universal OCR model (99%+ accuracy). Disable it to fall back to the official ddddocr model.',
+    detailHtml: `
+      <p>Select which OCR model is used for captcha recognition.</p>
+      <table class="table table-sm table-bordered">
+        <thead><tr><th>Status</th><th>Model</th><th>Accuracy</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><span class="badge bg-success">Enabled (default)</span></td>
+            <td>Universal self-trained model (<code>assets/model/universal/</code>)</td>
+            <td>99%+</td>
+          </tr>
+          <tr>
+            <td><span class="badge bg-secondary">Disabled</span></td>
+            <td>Official ddddocr model</td>
+            <td>Lower</td>
+          </tr>
+        </tbody>
+      </table>
+      <p><strong>Supported platforms:</strong> TixCraft, iBon, KHAM</p>
+      <p class="mb-0 text-muted small">Keeping this enabled is recommended. If you see abnormal recognition results, try disabling it and test again.</p>`,
+  },
+  remote_url: {
+    title: 'Settings UI URL',
+    short: 'Auto-generated URL for accessing the settings UI. Read-only.',
+    detailHtml: `
+      <p>This is the access URL for the settings UI. It is generated automatically from the configured "Settings UI port".</p>
+      <p><strong>Format:</strong> <code>http://127.0.0.1:{Port}/</code></p>
+      <p>For example, if the port is <code>16888</code>, the URL becomes <code>http://127.0.0.1:16888/</code>.</p>
+      <p><strong>This field is read-only.</strong> Any manual changes will be overwritten the next time settings are saved.</p>
+      <p class="mb-0 text-muted small">If another script or tool needs to access the settings API, you can copy this URL and use it directly.</p>`,
+  },
+};
+
+function buildLocalizedHelpEntry(baseContent, localizedMeta, defaultTitle) {
+  const meta = localizedMeta || {
+    title: defaultTitle,
+    short: 'Configuration help',
+    detail: 'Refer to the linked documentation for details.',
+  };
+
+  return {
+    title: meta.title,
+    short: meta.short,
+    detail: meta.detailHtml || `<p>${meta.detail}</p>`,
+    faq: meta.faq || [],
+    link: meta.link || baseContent.link || null,
+  };
+}
+
+const HELP_CONTENT_EN = Object.fromEntries(
+  Object.entries(HELP_CONTENT).map(([key, value]) => [key, buildLocalizedHelpEntry(value, HELP_CONTENT_EN_META[key], key)])
+);
+
+window.HELP_CONTENT = HELP_CONTENT;
+window.HELP_CONTENT_MAP = {
+  'zh-TW': HELP_CONTENT,
+  en: HELP_CONTENT_EN,
 };

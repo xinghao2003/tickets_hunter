@@ -45,7 +45,7 @@ except Exception as exc:
 # Get script directory for resource paths
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-CONST_APP_VERSION = "TicketsHunter (2026.05.17)"
+CONST_APP_VERSION = "TicketsHunter (2026.06.03)"
 
 CONST_MAXBOT_ANSWER_ONLINE_FILE = "MAXBOT_ONLINE_ANSWER.txt"
 CONST_MAXBOT_CONFIG_FILE = "settings.json"
@@ -137,6 +137,7 @@ def get_default_config():
     config_dict['tixcraft']={}
     config_dict["tixcraft"]["pass_date_is_sold_out"] = True
     config_dict["tixcraft"]["auto_reload_coming_soon_page"] = True
+    config_dict["tixcraft"]["allow_less_tickets"] = False
 
 
     # Contact information
@@ -202,6 +203,7 @@ def get_default_config():
     config_dict["advanced"]["remote_url"] = ""
 
     config_dict["advanced"]["auto_reload_page_interval"] = 5
+    config_dict["advanced"]["tixcraft_soft_block_delay"] = ""
     config_dict["advanced"]["auto_reload_overheat_count"] = 4
     config_dict["advanced"]["auto_reload_overheat_cd"] = 1.0
     config_dict["advanced"]["reset_browser_interval"] = 0
@@ -419,10 +421,10 @@ def clean_tmp_file():
                 print(f"[WARNING] Failed to remove {item}: {e}")
 
 class NoCacheStaticFileHandler(StaticFileHandler):
-    """Custom StaticFileHandler that prevents caching of settings.html"""
+    """Custom StaticFileHandler that prevents stale settings UI assets."""
     def set_extra_headers(self, path):
-        # Disable caching only for settings.html to prevent stale UI issues
-        if path == 'settings.html':
+        # Keep settings UI assets uncached so help text and translations update immediately.
+        if path in {'settings.html', 'help-content.js', 'settings.js'}:
             self.set_header('Cache-Control', 'no-cache, no-store, must-revalidate')
             self.set_header('Pragma', 'no-cache')
             self.set_header('Expires', '0')

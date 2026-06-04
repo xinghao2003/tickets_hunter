@@ -93,7 +93,7 @@
 <body>
   <div class="container py-4">
   <div id="message"></div>
-  <h2>Tickets Hunter <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" fill="currentColor" class="bi bi-ticket-perforated" viewBox="0 0 16 16" style="vertical-align: -0.125em;"><path d="M4 4.85v.9h1v-.9zm7 0v.9h1v-.9zm-7 1.8v.9h1v-.9zm7 0v.9h1v-.9zm-7 1.8v.9h1v-.9zm7 0v.9h1v-.9zm-7 1.8v.9h1v-.9zm7 0v.9h1v-.9z"/><path d="M1.5 3A1.5 1.5 0 0 0 0 4.5V6a.5.5 0 0 0 .5.5 1.5 1.5 0 1 1 0 3 .5.5 0 0 0-.5.5v1.5A1.5 1.5 0 0 0 1.5 13h13a1.5 1.5 0 0 0 1.5-1.5V10a.5.5 0 0 0-.5-.5 1.5 1.5 0 0 1 0-3A.5.5 0 0 0 16 6V4.5A1.5 1.5 0 0 0 14.5 3zM1 4.5a.5.5 0 0 1 .5-.5h13a.5.5 0 0 1 .5.5v1.05a2.5 2.5 0 0 0 0 4.9v1.05a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-1.05a2.5 2.5 0 0 0 0-4.9z"/></svg> - 多平台搶票自動化系統</h2>
+  <h2 id="page_title">Tickets Hunter <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" fill="currentColor" class="bi bi-ticket-perforated" viewBox="0 0 16 16" style="vertical-align: -0.125em;"><path d="M4 4.85v.9h1v-.9zm7 0v.9h1v-.9zm-7 1.8v.9h1v-.9zm7 0v.9h1v-.9zm-7 1.8v.9h1v-.9zm7 0v.9h1v-.9zm-7 1.8v.9h1v-.9zm7 0v.9h1v-.9z"/><path d="M1.5 3A1.5 1.5 0 0 0 0 4.5V6a.5.5 0 0 0 .5.5 1.5 1.5 0 1 1 0 3 .5.5 0 0 0-.5.5v1.5A1.5 1.5 0 0 0 1.5 13h13a1.5 1.5 0 0 0 1.5-1.5V10a.5.5 0 0 0-.5-.5 1.5 1.5 0 0 1 0-3A.5.5 0 0 0 16 6V4.5A1.5 1.5 0 0 0 14.5 3zM1 4.5a.5.5 0 0 1 .5-.5h13a.5.5 0 0 1 .5.5v1.05a2.5 2.5 0 0 0 0 4.9v1.05a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-1.05a2.5 2.5 0 0 0 0-4.9z"/></svg> - 多平台搶票自動化系統</h2>
   <div class="row g-3">
     <ul class="nav nav-tabs" id="myTab" role="tablist">
       <li class="nav-item" role="presentation">
@@ -130,6 +130,14 @@
       </li>
 
       <li class="nav-item ms-3 d-flex align-items-center" role="presentation">
+        <label for="language_selector" class="form-label mb-0 me-2">語言</label>
+        <select id="language_selector" class="form-select form-select-sm" style="width: auto;">
+          <option value="zh-TW">繁體中文</option>
+          <option value="en">English</option>
+        </select>
+      </li>
+
+      <li class="nav-item ms-3 d-flex align-items-center" role="presentation">
         <div class="form-check form-switch mb-0">
           <input class="form-check-input" type="checkbox" id="dark_mode_toggle">
           <label class="form-check-label" for="dark_mode_toggle">
@@ -144,7 +152,7 @@
 
 <!-- 版本資訊 -->
 <div class="alert alert-info" role="alert">
-  <p class="mb-0"><strong>版本</strong>：Tickets Hunter (2026.05.17) | <strong>技術支援</strong>：Claude Code AI 輔助開發</p>
+  <p class="mb-0"><strong>版本</strong>：Tickets Hunter (2026.06.03) | <strong>技術支援</strong>：Claude Code AI 輔助開發</p>
 </div>
 
 <!-- 開發狀態提示（可展開） -->
@@ -546,6 +554,25 @@
               <strong>拓元刷新速度警告：</strong>刷新間隔低於 8 秒可能導致 IP 被暫時封鎖（soft blocked）。建議設定為 8 秒以上，或使用不同網路/裝置分散風險。
               <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
             </div>
+          </div>
+        </div>
+
+        <div class="row mb-3 disappear" id="tixcraft-soft-block-delay-row" data-under="tixcraft">
+          <label for="tixcraft_soft_block_delay" class="col-sm-2 col-form-label">暫時鎖定等待秒數<span class="help-icon" data-help="tixcraft_soft_block_delay" title="暫時鎖定等待秒數說明" tabindex="0" role="button" aria-label="暫時鎖定等待秒數 說明"></span></label>
+          <div class="col-sm-10 col-lg-8 col-xl-6">
+            <input class="form-control" id="tixcraft_soft_block_delay" type="number" min="1" max="600" value="" placeholder="留空使用預設 240-420 秒" />
+            <small class="form-text text-muted">只影響拓元、添翼、Indievox 白畫面暫時鎖定等待時間。留空沿用預設值。</small>
+          </div>
+        </div>
+
+        <div class="row mb-3 disappear" id="tixcraft-allow-less-tickets-row" data-under="tixcraft">
+          <label class="col-sm-2 col-form-label">不足張數仍購買<span class="help-icon" data-help="tixcraft_allow_less_tickets" title="不足張數仍購買說明" tabindex="0" role="button" aria-label="不足張數仍購買 說明"></span></label>
+          <div class="col-sm-10 col-lg-8 col-xl-6">
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="tixcraft_allow_less_tickets">
+              <label class="form-check-label" for="tixcraft_allow_less_tickets">啟用</label>
+            </div>
+            <small class="form-text text-muted">只影響拓元、添翼、Indievox。開啟後，若設定張數不可選，會改買小於設定張數的最大可用張數。</small>
           </div>
         </div>
 
@@ -1212,7 +1239,7 @@
   </div>
 </div>
 
-  <script src="help-content.js?v=2026051802"></script>
-  <script src="settings.js?v=2026051802"></script>
+  <script src="help-content.js?v=2026060321"></script>
+  <script src="settings.js?v=2026060321"></script>
 </body>
 </html>

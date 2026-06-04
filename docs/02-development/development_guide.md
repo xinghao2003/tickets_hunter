@@ -1,7 +1,7 @@
 # 程式開發規範指南
 
 **文件說明**：定義 Tickets Hunter 專案的開發規範、WebDriver 除錯流程、程式碼風格標準與最佳實踐
-**最後更新**：2025-11-12
+**最後更新**：2026-06-02
 
 ---
 
@@ -372,14 +372,14 @@ def platform_function(driver, config_dict):
    - 避免改變函數簽名或返回值格式
 
 3. **測試範圍（優先順序）**
-   - nodriver_tixcraft.py (NoDriver) - 優先測試
-   - nodriver_kktix.py, nodriver_ticketplus.py, nodriver_ibon.py
+   - nodriver_tixcraft.py（主迴圈）- 優先測試
+   - platforms/kktix.py, platforms/ticketplus.py, platforms/ibon.py
    - 所有平台的核心功能
 
 4. **修改前確認清單**
    - [ ] 查閱對應的 API 指南文件
-     - NoDriver: `/docs/06-api-reference/nodriver_api_guide.md`
-   - [ ] 查看 `/docs/structure.md` 確認不破壞結構
+     - ZenDriver: `/docs/06-api-reference/zendriver_api_guide.md`（主要參考）
+   - [ ] 查看 `/docs/02-development/structure.md` 確認不破壞結構
    - [ ] 閱讀 ZenDriver 平台使用該函數的所有位置
    - [ ] 確認修改不會改變現有行為
    - [ ] 測試所有 WebDriver 的資料格式相容性

@@ -28,7 +28,7 @@ except Exception:
 
 # ===== Constants =====
 
-CONST_APP_VERSION = "TicketsHunter (2026.05.17)"
+CONST_APP_VERSION = "TicketsHunter (2026.06.03)"
 
 CONST_MAXBOT_ANSWER_ONLINE_FILE = "MAXBOT_ONLINE_ANSWER.txt"
 CONST_MAXBOT_CONFIG_FILE = "settings.json"
@@ -473,7 +473,14 @@ async def nodriver_current_url(tab):
     if tab:
         url_dict = {}
         try:
-            url_dict = await tab.js_dumps('window.location.href')
+            url_dict = await asyncio.wait_for(
+                tab.js_dumps('window.location.href'), timeout=5.0
+            )
+        except asyncio.TimeoutError:
+            # js_dumps blocks when JS execution is suspended (alert dialog, navigation, tab throttling)
+            # tab.target.url is a CDP-cached value that never requires JS execution
+            url = tab.target.url if hasattr(tab, 'target') and tab.target else ""
+            return url, is_quit_bot
         except Exception as exc:
             str_exc = ""
             try:

@@ -238,8 +238,9 @@ if area_keyword_item:
 **範例來源**：TixCraft (`nodriver_tixcraft.py:5078-5098`)
 
 ```python
-# Check seat availability for multiple tickets
-if config_dict["ticket_number"] > 1:
+# Check seat availability for multiple tickets.
+# TixCraft allow_less_tickets=true skips this strict area-level filter.
+if config_dict["ticket_number"] > 1 and not allow_less_tickets:
     try:
         font_el = await row.query_selector('font')
         if font_el:
@@ -271,6 +272,11 @@ if config_dict["ticket_number"] > 1:
 - TixCraft 在座位不足時會顯示確切數字（1-9）
 - 座位充足時顯示「○」或其他符號（不是數字）
 - 避免購買 2 張票時選到只剩 1 張的區域
+
+**不足張數仍購買**：
+- 預設 `tixcraft.allow_less_tickets=false`：拓元區域標示剩餘張數小於設定張數時會跳過該區域
+- 開啟 `tixcraft.allow_less_tickets=true`：區域層不因剩餘張數小於設定張數而跳過，後續票券頁會選擇小於設定張數的最大可用張數
+- 此設定只影響拓元、添翼、Indievox，不改變其他平台的票數不足判斷
 
 ---
 

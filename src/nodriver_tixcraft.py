@@ -568,15 +568,16 @@ async def check_refresh_datetime_gate(tab, config_dict, state):
             print(f"[WAIT] Target: {current_str} | Remaining: {remaining:.1f}s")
         state["last_countdown_print"] = now_mono
 
-    # Precision busy-wait for the final 2 seconds
+    # Final 2-second approach: yield to event loop instead of busy-waiting
+    # asyncio.sleep precision (~1ms on Windows) is sufficient; help text already
+    # instructs users to set refresh_datetime 1-2 seconds before the target.
     if remaining <= 2.0:
-        target_perf = time.perf_counter() + remaining
-        while time.perf_counter() < target_perf:
-            pass
+        if remaining > 0:
+            await asyncio.sleep(remaining)
         state["reached"] = True
         try:
             await tab.reload()
-            print("[REFRESH] Target time reached (precision), starting:", target_dt.strftime('%Y/%m/%d %H:%M:%S'))
+            print("[REFRESH] Target time reached, starting:", target_dt.strftime('%Y/%m/%d %H:%M:%S'))
         except Exception:
             pass
         return False
@@ -613,6 +614,7 @@ async def reload_config(config_dict, last_mtime):
                     adv_fields = [
                         "play_sound", "disable_adjacent_seat", "hide_some_image",
                         "auto_guess_options", "user_guess_string", "auto_reload_page_interval", "verbose",
+                        "tixcraft_soft_block_delay",
                         "auto_reload_overheat_count", "auto_reload_overheat_cd",
                         "idle_keyword", "resume_keyword", "idle_keyword_second", "resume_keyword_second",
                         "discord_webhook_url", "telegram_bot_token", "telegram_chat_id",
