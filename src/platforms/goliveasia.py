@@ -136,6 +136,29 @@ def _get_goliveasia_retry_config(config_dict):
     }
 
 
+def _get_goliveasia_pacing(config_dict):
+    advanced = config_dict.get("advanced", {})
+
+    def get_float(name, default, minimum=0.0):
+        try:
+            value = float(advanced.get(name, default) or default)
+        except (TypeError, ValueError):
+            value = default
+        return max(minimum, value)
+
+    return {
+        "action_delay_multiplier": get_float("goliveasia_action_delay_multiplier", 1.0, minimum=0.5),
+        "failed_zone_pause": get_float("goliveasia_failed_zone_pause", 3.0, minimum=0.0),
+        "use_availability_fetch": advanced.get("goliveasia_use_availability_fetch", False),
+    }
+
+
+async def _goliveasia_action_sleep(config_dict, min_seconds, max_seconds):
+    pacing = _get_goliveasia_pacing(config_dict)
+    multiplier = pacing["action_delay_multiplier"]
+    await asyncio.sleep(random.uniform(min_seconds * multiplier, max_seconds * multiplier))
+
+
 def _access_code_signature(config_dict):
     return "\n".join(_get_access_codes(config_dict))
 
@@ -331,7 +354,8 @@ async def _ttm_back_to_zones(tab, config_dict):
             debug.log("[GOLIVEASIA SEAT] No stored zones URL; using browser history")
             await tab.evaluate("history.back()")
 
-        await asyncio.sleep(random.uniform(1.0, 2.0))
+        pacing = _get_goliveasia_pacing(config_dict)
+        await _goliveasia_action_sleep(config_dict, 1.0 + pacing["failed_zone_pause"], 2.0 + pacing["failed_zone_pause"])
     except Exception as exc:
         debug.log(f"[GOLIVEASIA SEAT] Failed to return to zones page: {str(exc)}")
 
@@ -519,7 +543,7 @@ async def _goliveasia_event_detail(tab, config_dict):
     debug.log("[GOLIVEASIA EVENT] Looking for purchase/queue button")
 
     try:
-        await asyncio.sleep(random.uniform(0.5, 1.0))
+        await _goliveasia_action_sleep(config_dict, 0.8, 1.6)
 
         # Check if logged in first
         is_logged_in = await _check_logged_in(tab)
@@ -1090,7 +1114,7 @@ async def _ttm_accept_conditions(tab, config_dict):
     debug.log("[GOLIVEASIA TTM] On conditions page")
 
     try:
-        await asyncio.sleep(random.uniform(0.5, 1.0))
+        await _goliveasia_action_sleep(config_dict, 0.9, 1.8)
 
         # Check the T&C checkbox
         checked = await tab.evaluate('''
@@ -1344,7 +1368,7 @@ async def _ttm_select_zone(tab, config_dict):
     debug.log(f"[GOLIVEASIA ZONE] keyword: {area_keyword}, mode: {auto_select_mode}")
 
     try:
-        await asyncio.sleep(random.uniform(0.5, 1.0))
+        await _goliveasia_action_sleep(config_dict, 0.9, 1.8)
 
         if not area_auto_select.get("enable", True):
             debug.log("[GOLIVEASIA ZONE] Area auto-select disabled, waiting for manual section selection")
@@ -1378,7 +1402,13 @@ async def _ttm_select_zone(tab, config_dict):
             debug.log("[GOLIVEASIA ZONE] No zones found on page")
             return False
 
-        available_zones = await _ttm_get_available_zones(tab, config_dict)
+        pacing = _get_goliveasia_pacing(config_dict)
+        available_zones = []
+        if pacing["use_availability_fetch"]:
+            available_zones = await _ttm_get_available_zones(tab, config_dict)
+        elif not _state.get("goliveasia_avail_fetch_skip_logged", False):
+            debug.log("[GOLIVEASIA AVAIL] Skipping availability popup fetch to reduce booking-page request volume")
+            _state["goliveasia_avail_fetch_skip_logged"] = True
         if available_zones:
             zones_by_section = {zone["section"]: zone for zone in zones}
             prioritized_zones = []
@@ -1488,7 +1518,7 @@ async def _ttm_select_zone(tab, config_dict):
 
         if clicked:
             debug.log(f"[GOLIVEASIA ZONE] Clicked zone {target['section']}")
-            await asyncio.sleep(random.uniform(1.0, 2.0))
+            await _goliveasia_action_sleep(config_dict, 1.5, 3.0)
             return True
         else:
             debug.log("[GOLIVEASIA ZONE] Failed to click area element")
@@ -1509,7 +1539,7 @@ async def _ttm_select_seats(tab, config_dict):
     debug.log(f"[GOLIVEASIA SEAT] Allow non-adjacent seats: {allow_non_adjacent}")
 
     try:
-        await asyncio.sleep(random.uniform(0.5, 1.0))
+        await _goliveasia_action_sleep(config_dict, 0.9, 1.8)
 
         # Find all available (clickable) seats
         seats_json = await tab.evaluate('''
@@ -1613,7 +1643,7 @@ async def _ttm_select_seats(tab, config_dict):
             else:
                 debug.log(f"[GOLIVEASIA SEAT] Could not click seat: {seat['id']}")
 
-            await asyncio.sleep(random.uniform(0.2, 0.4))
+            await _goliveasia_action_sleep(config_dict, 0.7, 1.4)
 
         if selected_count < ticket_number:
             current_url = tab.url if hasattr(tab, 'url') else str(tab.target.url)
@@ -1626,7 +1656,7 @@ async def _ttm_select_seats(tab, config_dict):
             await _ttm_back_to_zones(tab, config_dict)
             return True
 
-        await asyncio.sleep(random.uniform(0.5, 1.0))
+        await _goliveasia_action_sleep(config_dict, 1.0, 2.0)
 
         # Click "Book Now" link
         booked = await tab.evaluate('''
@@ -1644,7 +1674,7 @@ async def _ttm_select_seats(tab, config_dict):
 
         if booked:
             debug.log("[GOLIVEASIA SEAT] Book Now clicked")
-            await asyncio.sleep(random.uniform(1.0, 2.0))
+            await _goliveasia_action_sleep(config_dict, 1.5, 3.0)
             current_url = tab.url if hasattr(tab, 'url') else str(tab.target.url)
             if 'fixed.php' in current_url:
                 _mark_current_zone_failed(current_url, debug, "Book Now did not advance")
@@ -1671,7 +1701,7 @@ async def _ttm_festival_select(tab, config_dict):
     debug.log(f"[GOLIVEASIA FESTIVAL] Target quantity: {ticket_number}")
 
     try:
-        await asyncio.sleep(random.uniform(0.5, 1.0))
+        await _goliveasia_action_sleep(config_dict, 0.9, 1.8)
 
         # Festival sections typically have a quantity selector
         result = await tab.evaluate(f'''
@@ -1732,7 +1762,7 @@ async def _ttm_festival_select(tab, config_dict):
             await _ttm_back_to_zones(tab, config_dict)
             return True
 
-        await asyncio.sleep(random.uniform(0.5, 1.0))
+        await _goliveasia_action_sleep(config_dict, 1.0, 2.0)
 
         # Click Book Now
         booked = await tab.evaluate('''
@@ -1750,7 +1780,7 @@ async def _ttm_festival_select(tab, config_dict):
 
         if booked:
             debug.log("[GOLIVEASIA FESTIVAL] Book Now clicked")
-            await asyncio.sleep(random.uniform(1.0, 2.0))
+            await _goliveasia_action_sleep(config_dict, 1.5, 3.0)
             current_url = tab.url if hasattr(tab, 'url') else str(tab.target.url)
             if 'festival.php' in current_url:
                 _mark_current_zone_failed(current_url, debug, "Festival Book Now did not advance")
@@ -1940,9 +1970,24 @@ async def _ttm_waiting_room(tab, config_dict):
                     return JSON.stringify({ action: 'human_verification_required' });
                 }
 
-                var buttons = document.querySelectorAll('button');
+                function normalizedText(el) {
+                    return (el.textContent || el.value || el.getAttribute('aria-label') || '').trim().toLowerCase();
+                }
+
+                function isJoinQueueText(text) {
+                    return (
+                        text.indexOf('join waiting room') !== -1 ||
+                        text.indexOf('join the waiting room') !== -1 ||
+                        text.indexOf('join queue') !== -1 ||
+                        text.indexOf('join the queue') !== -1 ||
+                        text.indexOf('enter queue') !== -1 ||
+                        text.indexOf('enter the queue') !== -1
+                    );
+                }
+
+                var buttons = document.querySelectorAll('button, a, [role="button"], input[type="button"], input[type="submit"]');
                 for (var i = 0; i < buttons.length; i++) {
-                    var buttonText = (buttons[i].textContent || '').trim().toLowerCase();
+                    var buttonText = normalizedText(buttons[i]);
                     var dialog = buttons[i].closest('[role="dialog"], .modal, .v-dialog');
                     var dialogText = dialog ? (dialog.textContent || '').toLowerCase() : '';
                     var isStillHereDialog = (
@@ -1960,9 +2005,9 @@ async def _ttm_waiting_room(tab, config_dict):
                         buttons[i].click();
                         return JSON.stringify({ action: 'confirmed_still_here' });
                     }
-                    if (isVisible(buttons[i]) && buttonText.indexOf('join waiting room') !== -1) {
+                    if (isVisible(buttons[i]) && isJoinQueueText(buttonText)) {
                         buttons[i].click();
-                        return JSON.stringify({ action: 'joined_waiting_room' });
+                        return JSON.stringify({ action: 'joined_waiting_room', text: buttonText });
                     }
                 }
 
